@@ -6,6 +6,8 @@ import subprocess
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from utils.openlane_utils import bcolors
+
 
 
 class Experiment:
@@ -40,16 +42,38 @@ class Experiment:
         with open(self.code_state_path, 'w') as code_state_file:
             code_state_file.write(state)
 
+
+    def create_trace_loglevel(self,logging):
+        "Add TRACE log level and Logger.trace() method."
+
+        logging.TRACE = 11
+        logging.addLevelName(logging.TRACE, "TRACE")
+
+        def _trace(logger, message, *args, **kwargs):
+            if logger.isEnabledFor(logging.TRACE):
+                logger._log(logging.TRACE, message, args, **kwargs)
+
+        logging.Logger.trace = _trace
+
+
     def setup_logging(self):
-        formatter = logging.Formatter("[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s")
+        self.create_trace_loglevel(logging)
+
+        # formatter = logging.Formatter("[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s")
+        formatter = logging.Formatter(bcolors.HEADER+'%(module)s:%(lineno)d:%(levelname)s'+bcolors.ENDC+'| %(message)s') #5
+        print("Log path (level name -> Debug) :",self.log_path)
+
         file_handler = logging.FileHandler(self.log_path)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
+
         stream_handler = logging.StreamHandler()
-        stream_handler.setLevel(logging.INFO)
+        stream_handler.setLevel(logging.TRACE)
         stream_handler.setFormatter(formatter)
         logging.basicConfig(level=logging.DEBUG, handlers=[file_handler, stream_handler])
         self.logger = logging.getLogger(__name__)
+
+
 
     def log_args(self, args):
         self.logger.debug('CLI Args:\n %s', str(args))
@@ -136,6 +160,8 @@ class Experiment:
         epoch_results_path = os.path.join(self.results_dirpath, 'epoch_{:04d}'.format(epoch))
         predictions_dir = os.path.join(epoch_results_path, '{}_predictions'.format(dataset.split))
         os.makedirs(predictions_dir, exist_ok=True)
+        self.logger.info("Predictions directory: " + str(predictions_dir))
+
         # eval metrics
         metrics = dataset.eval_predictions(predictions, output_basedir=predictions_dir)
         # log tensorboard metrics

@@ -37,13 +37,38 @@ def parse_args():
 
 
 def main():
+    # CUDA MANAGMENT
+    # Terminal:::  export CUDA_VISIBLE_DEVICES=1
+
+    # setting device on GPU if available, else CPU
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Using device:', device)
+
+
+
+    #Additional Info when using cuda
+    if device.type == 'cuda':
+        print(torch.cuda.get_device_name(0))
+        print('Memory Usage:')
+        print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
+        print('Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
+        print('Number CUDA Devices:', torch.cuda.device_count())
+
+        for i in range( torch.cuda.device_count()):
+            print('Device',i," :",torch.cuda.get_device_name(i))
+
+
     args = parse_args()
     exp = Experiment(args.exp_name, args, mode=args.mode)
     if args.cfg is None:
         cfg_path = exp.cfg_path
+        logging.info("Configuration path: "+str(cfg_path))
     else:
         cfg_path = args.cfg
     cfg = Config(cfg_path)
+
+
+    logging.info("Configuration: "+str(cfg))
     exp.set_cfg(cfg, override=False)
     device = torch.device('cpu') if not torch.cuda.is_available() or args.cpu else torch.device('cuda')
     runner = Runner(cfg, exp, device, view=args.view, resume=args.resume, deterministic=args.deterministic)

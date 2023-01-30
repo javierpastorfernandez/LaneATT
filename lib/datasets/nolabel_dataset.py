@@ -4,12 +4,13 @@ from .lane_dataset_loader import LaneDatasetLoader
 
 
 class NoLabelDataset(LaneDatasetLoader):
-    def __init__(self, img_h=720, img_w=1280, max_lanes=None, root=None, img_ext='.jpg', **_):
+    def __init__(self,split="test", img_h=720, img_w=1280, max_lanes=None, root=None, img_ext='.jpg', **_):
         """Use this loader if you want to test a model on an image without annotations or implemented loader."""
         self.root = root
         if root is None:
             raise Exception('Please specify the root directory')
 
+        self.split = split
         self.img_w, self.img_h = img_w, img_h
         self.img_ext = img_ext
         self.annotations = []

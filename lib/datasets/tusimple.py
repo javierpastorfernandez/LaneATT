@@ -2,6 +2,7 @@ import os
 import json
 import random
 import logging
+from utils.openlane_utils import bcolors,FormatAxes, get_cmap, create_trace_loglevel
 
 import numpy as np
 
@@ -94,6 +95,10 @@ class TuSimple(LaneDatasetLoader):
                          self.max_lanes)
 
     def transform_annotations(self, transform):
+        self.logger.trace (bcolors.OKGREEN + "transform: " + bcolors.ENDC+ str(transform))
+        assert False
+
+
         self.annotations = list(map(transform, self.annotations))
 
     def pred2tusimpleformat(self, idx, pred, runtime):
