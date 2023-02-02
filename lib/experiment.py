@@ -159,8 +159,12 @@ class Experiment:
         # setup dirs
         epoch_results_path = os.path.join(self.results_dirpath, 'epoch_{:04d}'.format(epoch))
         predictions_dir = os.path.join(epoch_results_path, '{}_predictions'.format(dataset.split))
+
         os.makedirs(predictions_dir, exist_ok=True)
         self.logger.info("Predictions directory: " + str(predictions_dir))
+
+        # save predictions
+        dataset.save_predictions(predictions,predictions_dir)
 
         # eval metrics
         metrics = dataset.eval_predictions(predictions, output_basedir=predictions_dir)

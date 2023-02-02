@@ -1,27 +1,31 @@
 import logging
 import pdb
+import os, glob, sys
+
+
+import numpy as np
+from scipy.interpolate import InterpolatedUnivariateSpline,interp1d,lagrange
+import math
 
 import cv2
-import numpy as np
+from skimage.morphology import medial_axis
+
 import imgaug.augmenters as iaa
 from imgaug.augmenters import Resize
+from imgaug.augmentables.lines import LineString, LineStringsOnImage
+
 from torchvision.transforms import ToTensor
 from torch.utils.data.dataset import Dataset
-from scipy.interpolate import InterpolatedUnivariateSpline,interp1d
 
-from imgaug.augmentables.lines import LineString, LineStringsOnImage
-from utils.openlane_utils import bcolors,FormatAxes, get_cmap, create_trace_loglevel
-
-from skimage.morphology import medial_axis
-from scipy.interpolate import lagrange
-
-
+from utils.openlane_utils import bcolors,FormatAxes, get_cmap, create_trace_loglevel,\
+getRotation,getRotation_2d,getRigidTransformation
 from lib.lane import Lane
 from .culane import CULane
 from .tusimple import TuSimple
 from .llamas import LLAMAS
 from .nolabel_dataset import NoLabelDataset
 from .openlane import OpenLane
+from .bosch import Bosch
 
 GT_COLOR = (255, 0, 0)
 PRED_HIT_COLOR = (0, 255, 0)
@@ -52,6 +56,8 @@ class LaneDataset(Dataset):
             self.dataset = NoLabelDataset(**kwargs)
         elif dataset == 'openlane':
             self.dataset = OpenLane(**kwargs)
+        elif dataset == 'bosch':
+            self.dataset = Bosch(**kwargs)
 
         else:
             raise NotImplementedError()
@@ -77,6 +83,13 @@ class LaneDataset(Dataset):
         self.to_tensor = ToTensor()
         self.transform = iaa.Sequential([iaa.Sometimes(then_list=augmentations, p=aug_chance), transformations])
         self.max_lanes = self.dataset.max_lanes
+
+        if self.dataset_name=="bosch":
+            # Belongs to Bosch class
+            self.logger.trace (bcolors.OKGREEN + "H_im2ipm:\n" + bcolors.ENDC+ str(self.dataset.H_im2ipm))
+
+
+
 
     @property
     def annotations(self):
@@ -766,7 +779,7 @@ class LaneDataset(Dataset):
 
 
 
-    def draw_annotation(self, idx, label=None, pred=None, img=None):
+    def draw_annotation(self, idx, label=None, pred=None, img=None,save_predictions=True,bins=False):
         # Get image if not provided
         if img is None:
             # print(self.annotations[idx]['path'])
@@ -779,7 +792,37 @@ class LaneDataset(Dataset):
         else:
             _, label, _ = self.__getitem__(idx)
             label = self.label_to_lanes(label)
-        img = cv2.resize(img, (self.img_w, self.img_h))
+
+
+        self.logger.trace(bcolors.OKGREEN+'idx: ' +bcolors.ENDC+str(idx))
+        self.logger.trace(bcolors.OKGREEN+'label: ' +bcolors.ENDC+str(label))
+
+        img_org = cv2.resize(img, (self.img_w, self.img_h))
+        img=np.array(img_org,copy=True)
+
+        """
+
+
+        if self.dataset_name=="bosch":
+            # IMAGE TO IPM
+
+            im_ipm = cv2.warpPerspective(img.astype("float") / 255, np.squeeze(self.dataset.H_im2ipm), (self.dataset.ipm_w, self.dataset.ipm_h))
+            self.logger.trace(bcolors.OKGREEN+'im_ipm\n: ' +bcolors.ENDC+str(im_ipm))
+
+            # im_ipm = np.clip(im_ipm, 0, 1)
+
+
+            cv2.namedWindow("img", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+            cv2.namedWindow("ipm", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+
+
+            cv2.imshow("img", img)# Show image
+            cv2.imshow("ipm", im_ipm)# Show image
+
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+
+        """
 
         img_h, _, _ = img.shape
         # Pad image to visualize extrapolated predictions
@@ -799,7 +842,11 @@ class LaneDataset(Dataset):
             data.append((matches, accs, pred))
         else:
             fp = fn = None
+
+        img=np.array(img_org,copy=True)
+
         for matches, accs, datum in data:
+
             for i, l in enumerate(datum):
                 if matches is None:
                     color = GT_COLOR
@@ -813,12 +860,67 @@ class LaneDataset(Dataset):
                 points = points.round().astype(int)
                 points += pad
                 xs, ys = points[:, 0], points[:, 1]
+
+
                 for curr_p, next_p in zip(points[:-1], points[1:]):
                     img = cv2.line(img,
                                    tuple(curr_p),
                                    tuple(next_p),
                                    color=color,
                                    thickness=3 if matches is None else 3)
+
+
+            if bins:
+                fontScale=1.0
+                fontThickness=3
+
+                self.logger.trace(bcolors.OKGREEN+'len(bins): ' +bcolors.ENDC+str(len(bins)))
+                self.logger.trace(bcolors.OKGREEN+'len(datum): ' +bcolors.ENDC+str(len(datum)))
+
+                for i in range(len(datum)):
+                    l= datum[i]
+                    bin_=int(bins[i])
+                    # bin_=np.where(bins==i)[0][0]
+
+                    points = l.points
+                    self.logger.trace(bcolors.OKGREEN+'points: ' +bcolors.ENDC+str(points))
+                    self.logger.trace(bcolors.OKGREEN+'bin: ' +bcolors.ENDC+str(bin_))
+
+                    labelSize=cv2.getTextSize(str(bin_),cv2.FONT_HERSHEY_SIMPLEX,fontScale,fontThickness)
+
+                    if points.shape[0]>3:
+                        pos_x=int(points[-3,0]-0.5*labelSize[0][0])
+                        pos_y=int(points[-3,1])
+
+                    else:
+                        pos_x=int(points[-1,0]-0.5*labelSize[0][0])
+                        pos_y=int(points[-1,1])
+
+
+                    self.logger.trace(bcolors.OKGREEN+'pos_x: ' +bcolors.ENDC+str(pos_x)+
+                    bcolors.OKGREEN+'pos_y: ' +bcolors.ENDC+str(pos_y))
+
+                    # Print lane side with respect to ego (below)
+                    img=cv2.putText(img, str(bin_), (pos_x,pos_y), cv2.FONT_HERSHEY_SIMPLEX ,fontScale, (250,250,250), fontThickness, cv2.LINE_AA)
+
+
+        if save_predictions:
+
+            item = self.dataset[idx]
+            img_path=item['path']
+            self.logger.trace (bcolors.OKGREEN + "img_path: " + bcolors.ENDC+ str(img_path))
+            filename=img_path.split('/')[-1]
+            self.logger.trace (bcolors.OKGREEN + "filename: " + bcolors.ENDC+ str(filename))
+
+            output_dir="/home/javpasto/Documents/LaneDetection/LaneATT/experiments/laneatt_r18_tusimple/results"
+            output_dir=os.path.join(output_dir,"predictions")
+
+            os.makedirs(output_dir, exist_ok=True)
+            self.logger.trace (bcolors.OKGREEN + "writting image in: " + bcolors.ENDC+ str(os.path.join(output_dir,filename)))
+            cv2.imwrite(os.path.join(output_dir,filename), img)
+
+
+
                 # if 'start_x' in l.metadata:
                 #     start_x = l.metadata['start_x'] * img.shape[1]
                 #     start_y = l.metadata['start_y'] * img.shape[0]
@@ -859,7 +961,9 @@ class LaneDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.dataset[idx]
-        img_org = cv2.imread(item['path'])
+        path=item['path']
+        img_org = cv2.imread(path)
+
         line_strings_org = self.lane_to_linestrings(item['old_anno']['lanes'])
         line_strings_org = LineStringsOnImage(line_strings_org, shape=img_org.shape)
         for i in range(30):
@@ -878,6 +982,7 @@ class LaneDataset(Dataset):
         if self.normalize:
             img = (img - IMAGENET_MEAN) / IMAGENET_STD
         img = self.to_tensor(img.astype(np.float32))
+        # return (img, label, idx,path)
         return (img, label, idx)
 
     def __len__(self):
