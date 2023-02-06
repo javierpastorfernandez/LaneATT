@@ -147,9 +147,15 @@ class Runner:
 
 
                     # Obtain plane from the road
+
+                    """
                     plane_model, inliers = filtered_pcd.segment_plane(distance_threshold=0.01,
-                                                            ransac_n=3,
-                                                            num_iterations=1000)
+                                        ransac_n=3,
+                                        num_iterations=1000)
+                    """
+                    plane_model, inliers = filtered_pcd.segment_plane(distance_threshold=0.05,
+                                        ransac_n=3,
+                                        num_iterations=1000)
 
 
 
@@ -158,7 +164,8 @@ class Runner:
                         # z=(d-ax-by)/c
 
                     # plane_points=SampleFromPlane(plane_model,[0,50,-15,15],sampling_period=1) -> MARTA
-                    plane_points=SampleFromPlane(plane_model,[0,103,-15,15],sampling_period=0.1)
+                    # A partir del 5 se ve
+                    plane_points=SampleFromPlane(plane_model,[4,103,-15,15],sampling_period=[0.1,0.01])
 
 
                     [a, b, c, d] = plane_model
@@ -217,6 +224,10 @@ class Runner:
                     plane_points_projected_img[:,1]=plane_points_projected_img[:,1]/plane_points_projected_img[:,2]
                     plane_points_projected_img=plane_points_projected_img[:,:2] # 0,1 -> x,y
 
+
+
+
+
                     if draw_plane_sem:
                         pcb_pts_projected=np.matmul(pcb_pts_filtered,dataloader.dataset.dataset.P_lidar2sem) # dim,nPts *presult (4*3)= npts,3
                         pcb_pts_projected=Homography2Cart(pcb_pts_projected)
@@ -246,6 +257,18 @@ class Runner:
 
                     img_paint=np.swapaxes(img_paint, 0, 1)
                     img_paint=np.swapaxes(img_paint, 1,2)
+
+
+
+                    # CROP FILTER POINTS ACCORDING TO IMAGE DIMENSIONS
+                    indexes =np.squeeze(np.where(   (plane_points_projected_img[:,0]>0) &  (plane_points_projected_img[:,0]<img_paint.shape[1])  ))
+                    plane_points_projected_img=plane_points_projected_img[indexes]
+                    plane_points=plane_points[indexes]
+
+                    indexes =np.squeeze(np.where(   (plane_points_projected_img[:,1]>0) &  (plane_points_projected_img[:,1]<img_paint.shape[0])  ))
+                    plane_points_projected_img=plane_points_projected_img[indexes]
+                    plane_points=plane_points[indexes]
+
 
 
                     # Settings for image drawing/painting
@@ -362,8 +385,18 @@ class Runner:
 
 
 
-                    dataloader.dataset.Detectionto3d(plane_points_projected_img,img_paint,prediction_,plot=True)
+                    indexes_3d=dataloader.dataset.Detectionto3d(plane_points_projected_img,img_paint,sem_img,prediction_,plot=False)
 
+                    predictions_3d=[]
+                    for index_3d in indexes_3d:
+                        breakpoint()
+
+                        prediction_3d=plane_points[index_3d[:,0],:3]# xyz (no ones)
+                        prediction_3d=np.append(prediction_3d,index_3d[:,1].reshape(-1,1),axis=1) # npts x 4
+                        predictions_3d.append(prediction_3d)
+
+
+                    # Detections to anchors
                     for idx_i,lane in enumerate(prediction_):
                         points = lane.points
 

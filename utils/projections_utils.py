@@ -17,13 +17,16 @@ def rescale_projection(org_size,tf_size,matrix):
 
 
 
-def DrawPoints(img,points,alpha=False,color=(20, 20, 20), thickness = 5,radius = 5):
+def DrawPoints(img,points,alpha=False,option="numpy",color=(20, 20, 20), thickness = 5,radius = 5):
     overlay = img.copy()
 
     points=points.astype("int") # int -> Coordenadas de imagen
-    for x,y in points:
-        overlay = cv2.circle(overlay, (x,y), radius, color, thickness)
+    if option=="opencv":
+        for x,y in points:
+            overlay = cv2.circle(overlay, (x,y), radius, color, thickness)
 
+    elif option=="numpy":
+        overlay[points[:,1],points[:,0]]=color
 
     if alpha:
         alpha = alpha[0]  # Transparency factor.
@@ -34,10 +37,26 @@ def DrawPoints(img,points,alpha=False,color=(20, 20, 20), thickness = 5,radius =
 
 
 
+def increasing_separation_arange(start, stop,step,factor):
+    i = 0
+    result = [start]
+    end=start
 
-def SampleFromPlane(plane_model, view_region,sampling_period=1): # view_region=[x_min, x_max, y_min, y_max]
-    x=np.arange(view_region[0],view_region[1],sampling_period) # in LIDAR points
-    y=np.arange(view_region[2],view_region[3],sampling_period) # in LIDAR points
+    while (end+step) <= stop:
+        end=end+step
+        result.append(end)
+        step*=factor
+
+    result.append(stop)
+    return np.array(result)
+
+
+def SampleFromPlane(plane_model, view_region,sampling_period=[1,1]): # view_region=[x_min, x_max, y_min, y_max]
+    # x=np.arange(view_region[0],view_region[1],sampling_period[0]) # in LIDAR points
+    x=increasing_separation_arange(view_region[0],view_region[1],sampling_period[0],1.5)
+    y=np.arange(view_region[2],view_region[3],sampling_period[1]) # in LIDAR points
+
+
     [a, b, c, d] = plane_model
 
     # points=np.empty((0,4))

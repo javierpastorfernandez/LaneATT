@@ -90,7 +90,6 @@ class LaneDataset(Dataset):
 
 
 
-
     @property
     def annotations(self):
         return self.dataset.annotations
@@ -775,7 +774,119 @@ class LaneDataset(Dataset):
 
 
 
+    def Detectionto3d(self,plane_points,img,sem_img,label,plot=True):
+        # Resize to img shape
+        sem_img = cv2.resize(sem_img, (img.shape[1],img.shape[0]), interpolation = cv2.INTER_AREA)
 
+        mask=np.zeros((img.shape[0],img.shape[1]))
+        labels=np.zeros((img.shape[0],img.shape[1]))
+
+
+        detection_coordinates=[]
+
+        for i, l in enumerate(label):
+            points = l.points
+            points[:, 0] *= img.shape[1]
+            points[:, 1] *= img.shape[0]
+
+            points = points.round().astype("int32")
+            points = points.reshape((-1, 1, 2))
+            img = cv2.polylines(img, [points],False, (0,255,0), 3)
+            mask = cv2.polylines(mask, [points],False, 255, 1)
+            labels = cv2.polylines(labels, [points],False, (i+1), 1) # different color per detection
+
+            detection= np.array(np.where(labels.astype("int") == (i+1))).T # 360, 600
+            detection[:,[0,1]]=detection[:,[1,0]]
+            detection_coordinates.append(detection)
+
+
+        color_dashed = np.asarray([255, 0, 128])
+        color_solid = np.asarray([37,  193,  255])
+
+        plane_points=plane_points.astype("int")
+        detections_3d=list()
+        indexes_3d=list()
+
+        for i in range(len(detection_coordinates)):
+            bool_mask = (plane_points[:, None] == detection_coordinates[i]).all(-1).any(1)
+            indexes =  np.squeeze(np.where(bool_mask))
+            detection_3d=plane_points[indexes]
+            indexes=np.append(indexes.reshape(-1,1),-1*np.ones((indexes.shape[0],1)),axis=1)
+
+
+            # 600, 300 (width,height)
+            # detection_sem=sem_img[detection_coordinates[i][:,1],detection_coordinates[i][:,0],:]
+
+            detection_sem=sem_img[detection_3d[:,1],detection_3d[:,0],:]
+
+
+            solid_idxs=np.where((detection_sem == color_solid).all(axis=1))[0]
+            dashed_idxs=np.where((detection_sem == color_dashed).all(axis=1))[0]
+
+            indexes[solid_idxs,1]=0
+            indexes[dashed_idxs,1]=1
+
+
+            """
+            LAST ROW INDICATING THE TYPE OF THE LINE
+            if solid_idxs.shape[0]> dashed_idxs.shape[0]:
+                indexes=np.append(indexes,[[0,0]],axis=0)
+            else:
+                indexes=np.append(indexes,[[1,1]],axis=0)
+            """
+
+            detections_3d.append(detection_3d)
+            indexes_3d.append(indexes.astype("int32"))
+
+
+        # Point cloud colors
+        #  https://bitbucket.org/bosch-lsi/tile_maps/src/master/src/tile_map.cpp
+
+
+        if plot:
+            from utils.projections_utils import DrawPoints
+            # mask_paint = np.expand_dims(mask, axis=-1)
+            # mask_paint = np.repeat(mask_paint, 3, axis=-1)
+
+            mask_paint=np.zeros((img.shape[0],img.shape[1],3))
+            cmap=get_cmap(len(detection_coordinates), name='PiYG')
+            detection_3d_mask=np.zeros((img.shape[0],img.shape[1]))
+
+            for i in range(len(detection_coordinates)):
+
+                # Paint original detection points
+                points = detection_coordinates[i].round().astype("int32")
+                points = points.reshape((-1, 1, 2))
+                sem_img = cv2.polylines(sem_img, [points],False, cmap(i), 3)
+                mask_paint = cv2.polylines(mask_paint, [points],False, cmap(i), 1)
+
+                # Paint 3d plane points overlapped with detection
+                detection_3d_mask= DrawPoints(detection_3d_mask,detections_3d[i],alpha=False, color = 255, thickness = 1,radius = 1)
+
+            mask_paint= DrawPoints(mask_paint,plane_points,alpha=False, color = (255,0,0), thickness = 1,radius = 1)
+
+
+
+        """boolean mask that is True where both elements of a row are coincident."""
+
+        if plot:
+            cv2.namedWindow("img", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+            cv2.imshow("img", img)# Show image
+
+            cv2.namedWindow("plane", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+            cv2.imshow("plane", mask_paint)# Show image
+
+            cv2.namedWindow("detection_3d_mask", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+            cv2.imshow("detection_3d_mask", detection_3d_mask)# Show image
+
+            cv2.namedWindow("sem_img", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+            cv2.imshow("sem_img", sem_img)# Show image
+
+
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+
+        return indexes_3d
 
 
 
