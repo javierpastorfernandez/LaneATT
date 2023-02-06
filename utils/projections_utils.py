@@ -1,4 +1,38 @@
 import numpy as np
+import cv2
+
+
+
+
+def rescale_projection(org_size,tf_size,matrix):
+    scale_factor_projection=np.array([
+    [(tf_size[0]/org_size[0]),0, 0],
+    [0,  (tf_size[1]/org_size[1]), 0],
+    [0,             0, 1]])
+
+    matrix = np.matmul(scale_factor_projection,matrix)
+    return matrix
+
+
+
+
+
+def DrawPoints(img,points,alpha=False,color=(20, 20, 20), thickness = 5,radius = 5):
+    overlay = img.copy()
+
+    points=points.astype("int") # int -> Coordenadas de imagen
+    for x,y in points:
+        overlay = cv2.circle(overlay, (x,y), radius, color, thickness)
+
+
+    if alpha:
+        alpha = alpha[0]  # Transparency factor.
+        img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0) # Following line overlays transparent rectangle over the image
+        return img
+
+    return overlay
+
+
 
 
 def SampleFromPlane(plane_model, view_region,sampling_period=1): # view_region=[x_min, x_max, y_min, y_max]

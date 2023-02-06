@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm, trange
 from utils.openlane_utils import bcolors,FormatAxes, get_cmap, create_trace_loglevel
 from utils.tracking import LaneTracker
-from utils.projections_utils import SampleFromPlane,Homography2Cart
+from utils.projections_utils import SampleFromPlane,Homography2Cart,DrawPoints,rescale_projection
 
 from tfmatrix import transformations
 import math
@@ -161,10 +161,12 @@ class Runner:
                     plane_points=SampleFromPlane(plane_model,[0,103,-15,15],sampling_period=0.1)
 
 
-                    breakpoint()
                     [a, b, c, d] = plane_model
                     print(f"Lidar plane equation: {a:.2f}x + {b:.2f}y + {c:.2f}z + {d:.2f} = 0")
 
+
+                    """
+                    TRYING TO PROJECT THE PLANE EQUATION INTO IMAGE COORDS: IMPOSSIBLE
                     point_lidar=plane_points[0,:].reshape(1,-1)
 
                     # Cart2Homography (plane_lidar)
@@ -189,28 +191,45 @@ class Runner:
                     print(f"Camera plane equation: {a_cam:.2f}x + {b_cam:.2f}y + {c_cam:.2f}z + {d_cam:.2f} = 0")
                     plane_points_camera=SampleFromPlane(plane_camera,[-50,50,-50,50],sampling_period=0.1)
 
-
-                    plane_points_projected=np.matmul(plane_points_camera,np.transpose(dataloader.dataset.dataset.P)) # dim,nPts *presult (4*3)= npts,3
+                    plane_points_projected=np.matmul(plane_points_camera,np.transpose(dataloader.dataset.dataset.P_sem)) # dim,nPts *presult (4*3)= npts,3
                     plane_points_projected=Homography2Cart(plane_points_projected)
                     plane_points_projected=plane_points_projected[:,[0,1]]
 
-                    # plane_points_projected=np.matmul(plane_points,dataloader.dataset.dataset.P_lidar2img) # dim,nPts *presult (4*3)= npts,3
-                    # plane_points_projected[:,0]=plane_points_projected[:,0]/plane_points_projected[:,2]
-                    # plane_points_projected[:,1]=plane_points_projected[:,1]/plane_points_projected[:,2]
-                    # plane_points_projected=plane_points_projected[:,:2] # 0,1 -> x,y
 
 
-                    breakpoint()
-                    pcb_pts_projected=np.matmul(pcb_pts_filtered,dataloader.dataset.dataset.P_lidar2img) # dim,nPts *presult (4*3)= npts,3
-                    pcb_pts_projected=Homography2Cart(pcb_pts_projected)
+                    """
+
+                    draw_plane_sem=False
+
+                    if draw_plane_sem:
+                        # PROJECT POINTS TO SEMANTICS
+                        plane_points_cpy=np.array(plane_points,copy=True)
+                        plane_points_projected_sem=np.matmul(plane_points_cpy,dataloader.dataset.dataset.P_lidar2sem) # dim,nPts *presult (4*3)= npts,3
+                        plane_points_projected_sem[:,0]=plane_points_projected_sem[:,0]/plane_points_projected_sem[:,2]
+                        plane_points_projected_sem[:,1]=plane_points_projected_sem[:,1]/plane_points_projected_sem[:,2]
+                        plane_points_projected_sem=plane_points_projected_sem[:,:2] # 0,1 -> x,y
 
 
-                    self.logger.debug(bcolors.OKGREEN+'pcb_pts_projected: ' +bcolors.ENDC+str(pcb_pts_projected))
-                    outliers = np.setdiff1d(np.arange(len(filtered_pcd.points)), inliers)
+                    # PROJECT POINTS IMAGE
+                    plane_points_cpy=np.array(plane_points,copy=True)
+                    plane_points_projected_img=np.matmul(plane_points_cpy,dataloader.dataset.dataset.P_lidar2img_resize) # dim,nPts *presult (4*3)= npts,3
+                    plane_points_projected_img[:,0]=plane_points_projected_img[:,0]/plane_points_projected_img[:,2]
+                    plane_points_projected_img[:,1]=plane_points_projected_img[:,1]/plane_points_projected_img[:,2]
+                    plane_points_projected_img=plane_points_projected_img[:,:2] # 0,1 -> x,y
 
-                    pcb_pts_projected_inliers=pcb_pts_projected[inliers]
-                    pcb_pts_projected_outliers=pcb_pts_projected[outliers]
+                    if draw_plane_sem:
+                        pcb_pts_projected=np.matmul(pcb_pts_filtered,dataloader.dataset.dataset.P_lidar2sem) # dim,nPts *presult (4*3)= npts,3
+                        pcb_pts_projected=Homography2Cart(pcb_pts_projected)
 
+                        self.logger.debug(bcolors.OKGREEN+'pcb_pts_projected: ' +bcolors.ENDC+str(pcb_pts_projected))
+                        outliers = np.setdiff1d(np.arange(len(filtered_pcd.points)), inliers)
+
+                        pcb_pts_projected_inliers=pcb_pts_projected[inliers]
+                        pcb_pts_projected_outliers=pcb_pts_projected[outliers]
+
+                        idxs=np.where(  (pcb_pts_projected[:,0]>0)& (pcb_pts_projected[:,0]<sem_img.shape[0])  &
+                        (pcb_pts_projected[:,1]>0)& (pcb_pts_projected[:,1]>sem_img.shape[1]))[0] # Points near floor; tupple size 1
+                        # self.logger.trace(bcolors.OKGREEN+'idxs: ' +bcolors.ENDC+str(idxs))
 
                     # Visualize the point cloud
                     cam_num=dataloader.dataset.dataset.UseSyncFile("lidar","cam0",filename) # From lidar file to gps
@@ -220,67 +239,52 @@ class Runner:
                     sem_img=cv2.imread(sem_image_path)
                     sem_img_paint=cv2.imread(sem_image_path)
 
-                    idxs=np.where(  (pcb_pts_projected[:,0]>0)& (pcb_pts_projected[:,0]<sem_img.shape[0])  &
-                    (pcb_pts_projected[:,1]>0)& (pcb_pts_projected[:,1]>sem_img.shape[1]))[0] # Points near floor; tupple size 1
-                    # self.logger.trace(bcolors.OKGREEN+'idxs: ' +bcolors.ENDC+str(idxs))
 
-                    # Radius of circle
-                    radius = 5
-                    # Line thickness of 2 px
-                    thickness = 5
+                    img_paint=np.array(img,copy=True) # Torch to numpy array
+                    img_paint=img_paint*255
+                    img_paint=img_paint.astype("uint8")
 
-                    # pts, dim
-                    color = (0, 255, 0) # Blue color in BGR
-                    for x,y in pcb_pts_projected_inliers:
-                        x=int(x)
-                        y=int(y)
-                        self.logger.debug(bcolors.OKGREEN+'x: ' +bcolors.ENDC+str(x)+
-                        bcolors.OKGREEN+'y: ' +bcolors.ENDC+str(y))
-
-                        sem_img_paint = cv2.circle(sem_img_paint, (x,y), radius, color, thickness)
+                    img_paint=np.swapaxes(img_paint, 0, 1)
+                    img_paint=np.swapaxes(img_paint, 1,2)
 
 
-                    color = (0,0,255) # Blue color in BGR
-                    # pts, dim
-                    for x,y in pcb_pts_projected_outliers:
-                        x=int(x)
-                        y=int(y)
-                        self.logger.debug(bcolors.OKGREEN+'x: ' +bcolors.ENDC+str(x)+
-                        bcolors.OKGREEN+'y: ' +bcolors.ENDC+str(y))
-
-                        sem_img_paint = cv2.circle(sem_img_paint, (x,y), radius, color, thickness)
-
-                    overlay = sem_img_paint.copy()
-
-                    color = (50,50,50) # Blue color in BGR
-                    # pts, dim
-
-                    for x,y in plane_points_projected:
-                        x=int(x)
-                        y=int(y)
-                        self.logger.debug(bcolors.OKGREEN+'x: ' +bcolors.ENDC+str(x)+
-                        bcolors.OKGREEN+'y: ' +bcolors.ENDC+str(y))
-
-                        overlay = cv2.circle(overlay, (x,y), radius, color, thickness)
+                    # Settings for image drawing/painting
+                    radius = 5 # Radius of circle
+                    thickness = 5   # Line thickness of 2 px
 
 
-                    alpha = 0.4  # Transparency factor.
-                    sem_img_paint = cv2.addWeighted(overlay, alpha, sem_img_paint, 1 - alpha, 0) # Following line overlays transparent rectangle over the image
+                    if draw_plane_sem:
+                        # Plane INLIERS painted in BLUE in SEM_SEG
+                        sem_img_paint= DrawPoints(sem_img_paint,pcb_pts_projected_inliers,alpha=False, color = (0, 255, 0), thickness = thickness,radius = radius)
+
+                        # Plane OUTLIERS painted in RED in SEM_SEG
+                        sem_img_paint= DrawPoints(sem_img_paint,pcb_pts_projected_outliers,alpha=False, color = (0, 0, 255), thickness = thickness,radius = radius)
+
+                        # PLANE SAMPLED POINTS painted in grey overlay in SEM_SEGq
+                        sem_img_paint= DrawPoints(sem_img_paint,plane_points_projected_sem,alpha=[0.4],  color = (50,0,255), thickness = thickness,radius = radius)
 
 
-                    cv2.namedWindow("sem_img", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
-                    cv2.imshow("sem_img", sem_img)# Show image
+                    # PLANE SAMPLED POINTS painted in grey overlay in SEM_SEG
+                    # alpha >>>>>> imagen mas nitida
 
-                    cv2.namedWindow("sem_img_paint", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
-                    cv2.imshow("sem_img_paint", sem_img_paint)# Show image
+                    plot=False
+                    if plot:
+                        img_paint= DrawPoints(img_paint,plane_points_projected_img,alpha=[0.4],  color = (50,0,255), thickness = 1,radius = 1)
 
-                    cv2.waitKey(0)
-                    cv2.destroyAllWindows()
+                        cv2.namedWindow("sem_img", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+                        cv2.imshow("sem_img", sem_img)# Show image
+
+                        cv2.namedWindow("sem_img_paint", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+                        cv2.imshow("sem_img_paint", sem_img_paint)# Show image
+
+                        cv2.namedWindow("img_paint", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+                        cv2.imshow("img_paint", img_paint)# Show image
+
+                        cv2.waitKey(0)
+                        cv2.destroyAllWindows()
 
 
 
-
-                    breakpoint()
                     #     pcd = o3d.io.read_point_cloud(lidar_path)
 
                     #     # LOAD SYNC
@@ -303,7 +307,6 @@ class Runner:
 
                     gps_file=dataloader.dataset.dataset.UseSyncFile("lidar","gps",filename) # From lidar file to gps
                     self.logger.trace(bcolors.OKGREEN+'gps_file: ' +bcolors.ENDC+str(gps_file))
-                    breakpoint()
 
                     # LOAD GPS INFO
                     gps_path=os.path.join(dataloader.dataset.dataset.gps_dir,gps_file+".txt")
@@ -344,9 +347,6 @@ class Runner:
             # self.tf_tree
 
 
-            #         breakpoint()
-
-
                 pred_lanes=[]
                 pred_lanes_angle=[]
                 pred_lanes_x=[]
@@ -359,6 +359,10 @@ class Runner:
                     if len(prediction_)>0 and initialization:
                         laneTracker = LaneTracker(len(prediction_), 0.1, 500)
                         initialization=False # being initialized
+
+
+
+                    dataloader.dataset.Detectionto3d(plane_points_projected_img,img_paint,prediction_,plot=True)
 
                     for idx_i,lane in enumerate(prediction_):
                         points = lane.points
@@ -408,12 +412,13 @@ class Runner:
                             # pred_lanes_x.append(points[0,0]) # Lejos del coche
 
 
-
+                """
                 if trackedLanes is not None:
                     laneTracker.update(trackedLanes)
 
                     self.logger.trace(bcolors.OKGREEN+'pred_lanes_angle: ' +bcolors.ENDC+str(pred_lanes_angle))
                     self.logger.trace(bcolors.OKGREEN+'pred_lanes_x: ' +bcolors.ENDC+str(pred_lanes_x))
+                """
 
                 # pred_lanes_angle=np.array(pred_lanes_angle)
                 # sort_idxs=np.argsort(pred_lanes_angle).astype("int")
@@ -422,10 +427,6 @@ class Runner:
                 bins = [sorted_array.index(value) for value in pred_lanes_x]
 
 
-                    # breakpoint()
-
-                if filename==1653476296100:
-                    breakpoint()
 
                 self.logger.info(bcolors.OKGREEN+'label: ' +bcolors.ENDC+str(label))
 

@@ -7,13 +7,35 @@ import math
 import cv2
 import pandas as pd
 from tfmatrix import transformations
+from utils.projections_utils import SampleFromPlane,Homography2Cart,DrawPoints,rescale_projection
+
 
 class Bosch(LaneDatasetLoader):
-    def __init__(self,split="test", img_h=720, img_w=1280, max_lanes=None, root=None, img_ext='.jpg', **_):
+    def __init__(self,split="test",img_org_size=(2000,4000),img_resize_size=(2000,4000),sem_size=(2000,4000), max_lanes=None, root=None, img_ext='.jpg', **_):
         """Use this loader if you want to test a model on an image without annotations or implemented loader."""
         self.logger = logging.getLogger(__name__)
+        img_size=img_resize_size
 
         self.root = root
+        if root is None:
+            raise Exception('Please specify the root directory')
+
+        self.split = split
+        self.img_w, self.img_h =img_size[1],img_size[0]
+        self.img_org_w, self.img_org_h = img_org_size[1],img_org_size[0]
+        self.sem_w, self.sem_h =sem_size[1],sem_size[0]
+
+
+        self.img_ext = img_ext
+        self.annotations = []
+        self.load_annotations()
+
+
+        # Force max_lanes, used when evaluating testing with models trained on other datasets
+        # On NoLabelDataset, always force it
+        self.max_lanes = max_lanes
+
+
         chunks=root.split("/")
         self.logger.trace (bcolors.OKGREEN + "chunks:" + bcolors.ENDC+ str(chunks))
         self.tf_tree = transformations.StaticTransformer()
@@ -69,25 +91,21 @@ class Bosch(LaneDatasetLoader):
         self.cam_intrinsics=cam_intrinsics # 3x4
         self.logger.trace (bcolors.OKGREEN + "cam_intrinsics:\n" + bcolors.ENDC+ str(cam_intrinsics))
 
-        resize_ratio=2
-        scale_factor_projection=np.array([
-        [0.5, 0, 0],
-        [0, 0.5, 0],
-        [0,   0, 1]])
-
         P=cam_intrinsics
-        P = np.matmul(scale_factor_projection,P)
-        self.logger.trace (bcolors.OKGREEN + "P:\n" + bcolors.ENDC+ str(P))
+        self.P_img=np.array(P,copy=True)
 
-        P=cam_intrinsics
-        P /= resize_ratio
-        P[2,2]*=resize_ratio
 
-        self.logger.trace (bcolors.OKGREEN + "P:\n" + bcolors.ENDC+ str(P))
-        breakpoint()
+        P_img_resize=np.array(P,copy=True)
+        P_img_resize=rescale_projection(img_org_size,img_size,P_img_resize)
+        self.P_img_resize=P_img_resize
 
-        self.P=P
+        P_sem=np.array(P,copy=True)
+        P_sem=rescale_projection(img_org_size,sem_size,P_sem)
+        self.P_sem=P_sem
 
+        self.logger.trace (bcolors.OKGREEN + "P_img:\n" + bcolors.ENDC+ str(self.P_img))
+        self.logger.trace (bcolors.OKGREEN + "P_img_resize:\n" + bcolors.ENDC+ str(self.P_img_resize))
+        self.logger.trace (bcolors.OKGREEN + "P_sem:\n" + bcolors.ENDC+ str(self.P_sem))
 
         """
         cv::Mat presult = velo2cam.t() * P.t();
@@ -116,10 +134,21 @@ class Bosch(LaneDatasetLoader):
         self.vel2cam_M=vel2cam_M # 4x4
 
         # 4x4 * 4*3 = 4*3
-        P_lidar2img = np.matmul(np.transpose(self.vel2cam_M),np.transpose(self.P))
+        P_lidar2img = np.matmul(np.transpose(self.vel2cam_M),np.transpose(self.P_img))
+        # P_lidar2img_resize=np.matmul(self.P_lidar2img,np.transpose(scale_factor))d
         self.P_lidar2img=P_lidar2img
 
 
+        P_lidar2img_resize = np.matmul(np.transpose(self.vel2cam_M),np.transpose(self.P_img_resize))
+        self.P_lidar2img_resize=P_lidar2img_resize
+
+        P_lidar2sem= np.matmul(np.transpose(self.vel2cam_M),np.transpose(self.P_sem))
+        self.P_lidar2sem=P_lidar2sem
+
+
+        self.logger.trace (bcolors.OKGREEN + "P_lidar2img:\n" + bcolors.ENDC+ str(self.P_lidar2img))
+        self.logger.trace (bcolors.OKGREEN + "P_lidar2img_resize:\n" + bcolors.ENDC+ str(self.P_lidar2img_resize))
+        self.logger.trace (bcolors.OKGREEN + "P_lidar2sem:\n" + bcolors.ENDC+ str(self.P_lidar2sem))
 
 
         # 2. gps2lidar
@@ -135,10 +164,6 @@ class Bosch(LaneDatasetLoader):
 
         transform = self.tf_tree.lookup_transform("gps", "lidar")
         self.logger.trace (bcolors.OKGREEN + "tf (lidar2gps):\n" + bcolors.ENDC+ str(transform))
-
-
-
-        breakpoint()
 
 
 
@@ -169,19 +194,6 @@ class Bosch(LaneDatasetLoader):
 
 
 
-        if root is None:
-            raise Exception('Please specify the root directory')
-
-        self.split = split
-        self.img_w, self.img_h = img_w, img_h
-        self.img_ext = img_ext
-        self.annotations = []
-        self.load_annotations()
-
-
-        # Force max_lanes, used when evaluating testing with models trained on other datasets
-        # On NoLabelDataset, always force it
-        self.max_lanes = max_lanes
 
     def get_img_heigth(self, _):
         return self.img_h
