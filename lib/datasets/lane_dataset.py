@@ -9,6 +9,8 @@ import math
 
 import cv2
 from skimage.morphology import medial_axis
+from utils.projections_utils import SampleFromPlane,Homography2Cart,DrawPoints,rescale_projection
+
 
 import imgaug.augmenters as iaa
 from imgaug.augmenters import Resize
@@ -826,17 +828,15 @@ class LaneDataset(Dataset):
             indexes[solid_idxs,1]=0
             indexes[dashed_idxs,1]=1
 
-
-            """
-            LAST ROW INDICATING THE TYPE OF THE LINE
-            if solid_idxs.shape[0]> dashed_idxs.shape[0]:
-                indexes=np.append(indexes,[[0,0]],axis=0)
-            else:
-                indexes=np.append(indexes,[[1,1]],axis=0)
-            """
-
             detections_3d.append(detection_3d)
             indexes_3d.append(indexes.astype("int32"))
+
+            """
+            # More than 10% of the data belongs to either dashed or solid in semantics
+            if (solid_idxs.shape[0]+dashed_idxs.shape[0])>=0.1*detection_sem.shape[0]:
+                detections_3d.append(detection_3d)
+                indexes_3d.append(indexes.astype("int32"))
+            """
 
 
         # Point cloud colors
@@ -860,6 +860,7 @@ class LaneDataset(Dataset):
                 sem_img = cv2.polylines(sem_img, [points],False, cmap(i), 3)
                 mask_paint = cv2.polylines(mask_paint, [points],False, cmap(i), 1)
 
+            for i in range(len(detections_3d)):
                 # Paint 3d plane points overlapped with detection
                 detection_3d_mask= DrawPoints(detection_3d_mask,detections_3d[i],alpha=False, color = 255, thickness = 1,radius = 1)
 
@@ -887,6 +888,156 @@ class LaneDataset(Dataset):
             cv2.destroyAllWindows()
 
         return indexes_3d
+
+
+
+    def save_frames(self,idx,img,predictions_3d,trackedPolys,lanes,colors,fontScale=1.0,fontThickness=3):
+
+        # self.logger.trace (bcolors.OKGREEN + "trackedPolys:(draw) " + bcolors.ENDC+ str(trackedPolys))
+
+
+        img_path = self.dataset[idx]['path']
+        self.logger.trace (bcolors.OKGREEN + "img_path: " + bcolors.ENDC+ str(img_path))
+        filename=(img_path.split('/')[-1]) # with png
+        self.logger.trace (bcolors.OKGREEN + "filename: " + bcolors.ENDC+ str(filename))
+
+
+        output_dir=self.dataset.saving_dir
+        output_dir=os.path.join(output_dir,"frames")
+        os.makedirs(output_dir, exist_ok=True)
+
+        path_img=os.path.join(output_dir,filename)
+        self.logger.trace (bcolors.OKGREEN + "writting image in: " + bcolors.ENDC+ path_img)
+
+
+        # PROJECT FROM LIDAR TO IMAGE
+        predictions_img=[]
+        for prediction_3d in predictions_3d:
+            points_h=prediction_3d.copy()[:,:3] # xyz
+            points_h=np.append(points_h,np.ones((points_h.shape[0],1)),axis=1)
+            self.logger.debug (bcolors.OKGREEN + "points_h:\n" + bcolors.ENDC+ str(points_h))
+
+            pts_img=np.matmul(points_h,self.dataset.P_lidar2img_resize) # dim,nPts *presult (4*3)= npts,3
+            pts_img=Homography2Cart(pts_img)
+            self.logger.debug (bcolors.OKGREEN + "pts_img:\n" + bcolors.ENDC+ str(pts_img))
+            predictions_img.append(pts_img)
+
+
+        for idx_i in range(len(predictions_img)):
+            pts_img=predictions_img[idx_i]
+            pts_draw=pts_img.copy().reshape((-1, 1, 2)).round().astype("int32")
+            img = cv2.polylines(img, [pts_draw],False, (0,255,0), 1)
+
+
+            labelSize=cv2.getTextSize(str(trackedPolys[idx_i,1]),cv2.FONT_HERSHEY_SIMPLEX,fontScale,fontThickness)
+            if pts_img.shape[0]>3:
+                pos_x=int(pts_img[3,0]-0.5*labelSize[0][0])
+                pos_y=int(pts_img[3,1])
+
+            else:
+                pos_x=int(pts_img[0,0]-0.5*labelSize[0][0])
+                pos_y=int(pts_img[0,1])
+
+            self.logger.debug(bcolors.OKGREEN+'pos_x: ' +bcolors.ENDC+str(pos_x)+bcolors.OKGREEN+' pos_y: ' +bcolors.ENDC+str(pos_y))
+            img=cv2.putText(img, str(trackedPolys[idx_i,1]), (pos_x,pos_y), cv2.FONT_HERSHEY_SIMPLEX ,fontScale, (250,250,250), fontThickness, cv2.LINE_AA)
+
+
+        alpha=0.2
+        overlay=img.copy()
+        self.logger.trace (bcolors.OKGREEN + "lanes: " + bcolors.ENDC+ str(lanes))
+        self.logger.trace (bcolors.OKGREEN + "colors: " + bcolors.ENDC+ str(colors))
+
+        for lane in lanes:
+            # color=np.array(colors[lane[0]]).astype("int")
+            color=np.array(colors[lane[0]]).astype("int")
+            color=(int(color[0]),int(color[1]),int(color[2]))
+
+
+            self.logger.trace (bcolors.WARNING + "color: " + bcolors.ENDC+ str(color))
+
+            lane_01_idx=np.where(trackedPolys[:,1]==lane[0])[0][0].astype("int")
+            lane_02_idx=np.where(trackedPolys[:,1]==lane[1])[0][0].astype("int")
+
+            self.logger.trace (bcolors.OKGREEN + "lane_01_idx: " + bcolors.ENDC+ str(lane_01_idx))
+            self.logger.trace (bcolors.OKGREEN + "lane_02_idx: " + bcolors.ENDC+ str(lane_02_idx))
+
+            lane_poly=np.append(predictions_img[lane_01_idx],predictions_img[lane_02_idx][::-1,:],axis=0)
+            overlay = cv2.fillPoly(overlay, pts=np.int32([lane_poly]), color=color)
+
+        img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0) # Following line overlays transparent rectangle over the image
+
+        self.logger.trace (bcolors.OKGREEN + "writting image in: " + bcolors.ENDC+ path_img)
+        cv2.imwrite(path_img,img)
+
+
+    def save_local_info(self,idx,predictions_3d,trackedPolys,lanes):
+        img_path = self.dataset[idx]['path']
+        self.logger.trace (bcolors.OKGREEN + "img_path: " + bcolors.ENDC+ str(img_path))
+        filename=(img_path.split('/')[-1]).split(".png")[0]
+        self.logger.trace (bcolors.OKGREEN + "filename: " + bcolors.ENDC+ str(filename))
+
+        # output_dir="/home/javpasto/Documents/LaneDetection/LaneATT/experiments/laneatt_r18_tusimple/results"
+        output_dir=self.dataset.saving_dir
+        output_dir=os.path.join(output_dir,"local_info")
+        os.makedirs(output_dir, exist_ok=True)
+
+        path_txt=os.path.join(output_dir,filename+".txt")
+        self.logger.trace (bcolors.OKGREEN + "writting txt in: " + bcolors.ENDC+ path_txt)
+
+
+        with open(path_txt,"w") as f:
+            line=""
+            for idx_i in range(lanes.shape[0]):
+                line+=str(lanes[idx_i,0])+" " +str(lanes[idx_i,1])+", "
+            f.write(line+"\n")
+
+            for idx_i in range(len(predictions_3d)):
+                prediction_3d=predictions_3d[idx_i]
+                id=trackedPolys[idx_i,1]
+                line=str(id)+"| "
+                f.write(line)
+
+                line=""
+                for x_,y_,z_,type_ in prediction_3d:
+                    line=line+str(x_)+" "+str(y_)+" "+str(z_)+" "+str(type_)+", "
+                line+="\n"
+                f.write(line)
+
+
+    def save_global_info(self,idx,predictions_3d,trackedPolys,lanes):
+        img_path = self.dataset[idx]['path']
+        self.logger.trace (bcolors.OKGREEN + "img_path: " + bcolors.ENDC+ str(img_path))
+        filename=(img_path.split('/')[-1]).split(".png")[0]
+        self.logger.trace (bcolors.OKGREEN + "filename: " + bcolors.ENDC+ str(filename))
+
+        # output_dir="/home/javpasto/Documents/LaneDetection/LaneATT/experiments/laneatt_r18_tusimple/results"
+        output_dir=self.dataset.saving_dir
+        output_dir=os.path.join(output_dir,"global_info")
+        os.makedirs(output_dir, exist_ok=True)
+
+        path_txt=os.path.join(output_dir,filename+".txt")
+        self.logger.trace (bcolors.OKGREEN + "writting txt in: " + bcolors.ENDC+ path_txt)
+
+
+        with open(path_txt,"w") as f:
+            line=""
+            for idx_i in range(lanes.shape[0]):
+                line+=str(lanes[idx_i,0])+" " +str(lanes[idx_i,1])+", "
+            f.write(line+"\n")
+
+            for idx_i in range(len(predictions_3d)):
+                prediction_3d=predictions_3d[idx_i]
+                id=trackedPolys[idx_i,1]
+                line=str(id)+"| "
+                f.write(line)
+
+                line=""
+                for x_,y_,z_,type_ in prediction_3d:
+                    line=line+str(x_)+" "+str(y_)+" "+str(z_)+" "+str(type_)+", "
+                line+="\n"
+                f.write(line)
+
+
 
 
 
@@ -1023,9 +1174,13 @@ class LaneDataset(Dataset):
             filename=img_path.split('/')[-1]
             self.logger.trace (bcolors.OKGREEN + "filename: " + bcolors.ENDC+ str(filename))
 
+            # output_dir="/home/javpasto/Documents/LaneDetection/LaneATT/experiments/laneatt_r18_tusimple/results"
             output_dir="/home/javpasto/Documents/LaneDetection/LaneATT/experiments/laneatt_r18_tusimple/results"
+            output_dir=self.dataset.saving_dir
             output_dir=os.path.join(output_dir,"predictions")
 
+
+            # Save images
             os.makedirs(output_dir, exist_ok=True)
             self.logger.trace (bcolors.OKGREEN + "writting image in: " + bcolors.ENDC+ str(os.path.join(output_dir,filename)))
             cv2.imwrite(os.path.join(output_dir,filename), img)

@@ -17,6 +17,7 @@ class Bosch(LaneDatasetLoader):
         img_size=img_resize_size
 
         self.root = root
+
         if root is None:
             raise Exception('Please specify the root directory')
 
@@ -25,16 +26,13 @@ class Bosch(LaneDatasetLoader):
         self.img_org_w, self.img_org_h = img_org_size[1],img_org_size[0]
         self.sem_w, self.sem_h =sem_size[1],sem_size[0]
 
-
         self.img_ext = img_ext
         self.annotations = []
         self.load_annotations()
 
-
         # Force max_lanes, used when evaluating testing with models trained on other datasets
         # On NoLabelDataset, always force it
         self.max_lanes = max_lanes
-
 
         chunks=root.split("/")
         self.logger.trace (bcolors.OKGREEN + "chunks:" + bcolors.ENDC+ str(chunks))
@@ -49,6 +47,7 @@ class Bosch(LaneDatasetLoader):
             if (i<=len(chunks)-4):
                 calib_path+="/"+chunk
         sequence_path=sync_path
+
         calib_path+="/"+"calibs"
         sync_path+="/"+"sync.txt"
 
@@ -72,7 +71,6 @@ class Bosch(LaneDatasetLoader):
 
 
         # RETRIEVE CALIBRATION MATRICES FROM SEQUENCE
-
         # 1. Intrinsics
         instrinsics_path=os.path.join(self.calib_path,"calib_cam_to_cam0.txt")
         with open(instrinsics_path,"r") as f:
@@ -208,8 +206,15 @@ class Bosch(LaneDatasetLoader):
         self.annotations = []
         pattern = '{}/**/*{}'.format(self.root, self.img_ext)
         print('Looking for image files with the pattern', pattern)
-        for file in glob.glob(pattern, recursive=True):
+
+        files = glob.glob(pattern, recursive=True)
+        files.sort()
+
+        for file in files:
             self.annotations.append({'lanes': [], 'path': file})
+
+
+
 
     def ReadSyncFile(self):
         sync_path=self.sync_path

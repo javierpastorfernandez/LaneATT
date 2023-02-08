@@ -6,13 +6,16 @@ import cv2
 import torch
 import numpy as np
 from tqdm import tqdm, trange
-from utils.openlane_utils import bcolors,FormatAxes, get_cmap, create_trace_loglevel
+
+from utils.openlane_utils import bcolors,FormatAxes, get_cmap, create_trace_loglevel,\
+    associate_elements,resample_laneline,associate_polylines
 from utils.tracking import LaneTracker
 from utils.projections_utils import SampleFromPlane,Homography2Cart,DrawPoints,rescale_projection
 
 from tfmatrix import transformations
 import math
 from interval import interval as pyinterval
+import copy
 
 
 # Point clouds
@@ -105,6 +108,13 @@ class Runner:
                  process_cov_parallel=0, proc_noise_type='white'):"""
 
         initialization=True
+        tracking_init=False
+        colors_by_lane={}
+        pcb_fields=["x","y","z","type","poly_id","tracking_id"]
+        point_cloud=np.empty((0,len(pcb_fields)))
+        poly_id=0
+
+
 
         with torch.no_grad():
             for idx, (images, _, _) in enumerate(tqdm(dataloader)):
@@ -132,9 +142,14 @@ class Runner:
                 if dataset_name=="bosch":
                     lidar_path = dataloader.dataset.dataset.sequence_path + "/pc_filtered/semantic/camera_0/" + str(filename) + ".pcd"
                     self.logger.trace(bcolors.OKGREEN+'lidar_path: ' +bcolors.ENDC+str(lidar_path))
-
                     pcd = o3d.io.read_point_cloud(lidar_path)
                     pcb_pts=np.array(pcd.points)
+                    self.logger.debug(bcolors.OKGREEN+'pcd: ' +bcolors.ENDC+str(pcd)) # PointCloud with ... npts
+                    self.logger.debug(bcolors.OKGREEN+'pcd (Npts): ' +bcolors.ENDC+str(pcb_pts.shape[0]))
+
+                    if pcb_pts.shape[0]==0:
+                        continue # do not calculate any further
+
                     pcb_pts=np.append(pcb_pts,np.ones((pcb_pts.shape[0],1)),axis=1)
 
 
@@ -153,13 +168,7 @@ class Runner:
                                         ransac_n=3,
                                         num_iterations=1000)
                     """
-                    plane_model, inliers = filtered_pcd.segment_plane(distance_threshold=0.05,
-                                        ransac_n=3,
-                                        num_iterations=1000)
-
-
-
-
+                    plane_model, inliers = filtered_pcd.segment_plane(distance_threshold=0.05,ransac_n=3,num_iterations=1000)
                         # ax + by + cz +d=0
                         # z=(d-ax-by)/c
 
@@ -224,10 +233,6 @@ class Runner:
                     plane_points_projected_img[:,1]=plane_points_projected_img[:,1]/plane_points_projected_img[:,2]
                     plane_points_projected_img=plane_points_projected_img[:,:2] # 0,1 -> x,y
 
-
-
-
-
                     if draw_plane_sem:
                         pcb_pts_projected=np.matmul(pcb_pts_filtered,dataloader.dataset.dataset.P_lidar2sem) # dim,nPts *presult (4*3)= npts,3
                         pcb_pts_projected=Homography2Cart(pcb_pts_projected)
@@ -258,8 +263,6 @@ class Runner:
                     img_paint=np.swapaxes(img_paint, 0, 1)
                     img_paint=np.swapaxes(img_paint, 1,2)
 
-
-
                     # CROP FILTER POINTS ACCORDING TO IMAGE DIMENSIONS
                     indexes =np.squeeze(np.where(   (plane_points_projected_img[:,0]>0) &  (plane_points_projected_img[:,0]<img_paint.shape[1])  ))
                     plane_points_projected_img=plane_points_projected_img[indexes]
@@ -268,8 +271,6 @@ class Runner:
                     indexes =np.squeeze(np.where(   (plane_points_projected_img[:,1]>0) &  (plane_points_projected_img[:,1]<img_paint.shape[0])  ))
                     plane_points_projected_img=plane_points_projected_img[indexes]
                     plane_points=plane_points[indexes]
-
-
 
                     # Settings for image drawing/painting
                     radius = 5 # Radius of circle
@@ -371,12 +372,19 @@ class Runner:
 
 
                 pred_lanes=[]
-                pred_lanes_angle=[]
-                pred_lanes_x=[]
-                trackedLanes=[]
+                pred_lanes_ordering=[]
 
 
                 if prediction is not None:
+
+                    """
+                  img, fp, fn = dataloader.dataset.draw_annotation(idx, img=img_paint, pred=prediction[0],\
+                        save_predictions=save_predictions,bins=False)
+                    cv2.imshow('pred', img)
+                    cv2.waitKey(0)
+                    breakpoint()
+                    """
+
                     self.logger.trace(bcolors.OKGREEN+'prediction (len): ' +bcolors.ENDC+str(len(prediction)))
                     prediction_=prediction[0] # label infdo
                     if len(prediction_)>0 and initialization:
@@ -384,100 +392,226 @@ class Runner:
                         initialization=False # being initialized
 
 
+                    self.logger.trace(bcolors.OKGREEN+'Iteration n: ' +bcolors.ENDC+str(idx))
+                    indexes_3d=dataloader.dataset.Detectionto3d(plane_points_projected_img,img_paint,sem_img,copy.deepcopy(prediction_),plot=False)
+                    # trackedLanes=np.nan*np.ones((len(indexes_3d),2))
+                    trackedLanes=np.empty((len(indexes_3d),2))* np.nan # if not, it initializes it with kind of random values
 
-                    indexes_3d=dataloader.dataset.Detectionto3d(plane_points_projected_img,img_paint,sem_img,prediction_,plot=False)
-
+                    # 0. RETRIEVE LIDAR 3D DETECTIONS
                     predictions_3d=[]
                     for index_3d in indexes_3d:
-                        breakpoint()
-
                         prediction_3d=plane_points[index_3d[:,0],:3]# xyz (no ones)
                         prediction_3d=np.append(prediction_3d,index_3d[:,1].reshape(-1,1),axis=1) # npts x 4
                         predictions_3d.append(prediction_3d)
 
+                    if len(predictions_3d)==0:
+                        breakpoint()
+                        continue
 
-                    # Detections to anchors
-                    for idx_i,lane in enumerate(prediction_):
-                        points = lane.points
+                    # 1. RETRIEVE INTERVAL OF DATA
+                    # lidar2img relationships y(img)-> x(lidar)
+                    dim=0
+                    other_dim=1
+
+                    for idx_i,lane in enumerate(predictions_3d):
+                        points=predictions_3d[idx_i]
 
                         if idx_i==0:
-                            intervals=pyinterval[points[0,1],points[-1,1]]
+                            intervals=pyinterval[points[0,dim],points[-1,dim]]
                         else:
-                            intervals = intervals & pyinterval[points[0,1],points[-1,1]]
+                            intervals = intervals & pyinterval[points[0,dim],points[-1,dim]]
 
                         self.logger.trace(bcolors.OKGREEN+'intervals: ' +bcolors.ENDC+str(intervals))
 
+
+                    # 2. GET METRICS TO ORDER POLYLINES FROM RIGHT TO LEFT
                     if len(intervals)>0:
                         middle_point=0.5*(intervals[0][1]+intervals[0][0])
                         self.logger.trace(bcolors.OKGREEN+'middle_point: ' +bcolors.ENDC+str(middle_point))
-                    else:
-                        middle_point=0
 
-                    for idx_i,lane in enumerate(prediction_):
-
-                        points = lane.points
-                        pred_lanes.append(points) # van ordenados de menor a mayor en y / de mas lejos en pantalla a mas cerca en pantalla
-                        self.logger.trace(bcolors.OKGREEN+'points: ' +bcolors.ENDC+str(points))
-
-
-                        # 1. CALCULATE ANGLE OF POINTS
-                        points_diff=np.gradient(points,axis=0)
-                        spline_diff_mean=np.mean(points,axis=0)
-                        median_angle=np.arctan2(spline_diff_mean[1], spline_diff_mean[0])
-                        median_angle=median_angle*180/math.pi # in degrees
-                        pred_lanes_angle.append(median_angle) # punto mas alejado al coche
-
-                        lane_tracking=[]
-                        lane_tracking.append(points[0,:])
+                    for idx_i in range(len(predictions_3d)):
+                        # pred_lanes.append(prediction_[idx_i].points) # van ordenados de menor a mayor en y / de mas lejos en pantalla a mas cerca en pantalla
+                        points=predictions_3d[idx_i] # Lane points / Lidar coordinate system
+                        self.logger.trace(bcolors.OKGREEN+'points: \n' +bcolors.ENDC+str(points))
 
                         if len(intervals)>0:
-                            min_idx=np.argmin(np.absolute(points[:,1]-middle_point))
-                            pred_lanes_x.append(points[min_idx,0])
-                            lane_tracking.append(points[min_idx,:])
+                            min_idx=np.argmin(np.absolute(points[:,dim]-middle_point))
+                            pred_lanes_ordering.append(points[min_idx,other_dim])
                         else:
-                            pred_lanes_x.append(np.mean(points[:,0]))
-                            lane_tracking.append(points[int(points.shape[0]/2),:]) # Middle of the polyline
+                            pred_lanes_ordering.append(np.mean(points[:,other_dim]))
+
+                        # trackedLanes.append(0.5*(points[0,other_dim]+points[-1,other_dim]))
+                        # trackedLanes[idx_i,0]=(0.5*(points[0,other_dim]+points[-1,other_dim]))
+                        trackedLanes[idx_i,0]=points[0,other_dim]
+
+                   # 3. ORDER LANES -> GET BINS INFORMATION
+                    bins=np.argsort(np.array(pred_lanes_ordering))
+
+                    pred_lanes_ordering=[pred_lanes_ordering[sort_idx] for sort_idx in bins]
+                    predictions_3d=[predictions_3d[sort_idx] for sort_idx in bins]
+                    trackedLanes=trackedLanes[bins,:]
+
+                    self.logger.trace(bcolors.OKGREEN+'pred_lanes_ordering: ' +bcolors.ENDC+str(pred_lanes_ordering))
+                    self.logger.info(bcolors.OKGREEN+'label: ' +bcolors.ENDC+str(label))
 
 
-                        trackedLanes.append(lane_tracking)
+                    # GET TRACKING ORDER
+                    if not tracking_init:
+                        tracking_init=True
+                        old_trackedLanes=copy.deepcopy(trackedLanes)
 
-                            # pred_lanes_x.append(points[-1,0]) # Pegado al coche
-                            # pred_lanes_x.append(points[0,0]) # Lejos del coche
+                        for idx_i in range(len(predictions_3d)):
+                            old_trackedLanes[idx_i,1]=idx_i
 
+                    self.logger.trace(bcolors.OKGREEN+'old_trackedLanes (before): ' +bcolors.ENDC+str(old_trackedLanes))
+                    trackedLanes=associate_elements(old_trackedLanes, trackedLanes,2.0)
 
-                """
-                if trackedLanes is not None:
-                    laneTracker.update(trackedLanes)
-
-                    self.logger.trace(bcolors.OKGREEN+'pred_lanes_angle: ' +bcolors.ENDC+str(pred_lanes_angle))
-                    self.logger.trace(bcolors.OKGREEN+'pred_lanes_x: ' +bcolors.ENDC+str(pred_lanes_x))
-                """
-
-                # pred_lanes_angle=np.array(pred_lanes_angle)
-                # sort_idxs=np.argsort(pred_lanes_angle).astype("int")
-
-                sorted_array = sorted(pred_lanes_x)
-                bins = [sorted_array.index(value) for value in pred_lanes_x]
+                    # old_trackedLanes=copy.deepcopy(trackedLanes)
 
 
+                    for idx_i in range(trackedLanes.shape[0]):
+                        id=trackedLanes[idx_i,1]
 
-                self.logger.info(bcolors.OKGREEN+'label: ' +bcolors.ENDC+str(label))
+                        find_idx=np.where(old_trackedLanes[:,1]==id)[0]
+                        if find_idx.shape[0]>0:
+                            old_trackedLanes[find_idx,:]=trackedLanes[idx_i,:]
+                        else:
+                            old_trackedLanes=np.append(old_trackedLanes,trackedLanes[idx_i,:].reshape(1,-1),axis=0)
 
-                if self.view:
-                    img = (images[0].cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-                    img, fp, fn = dataloader.dataset.draw_annotation(idx, img=img, pred=prediction[0],\
-                        save_predictions=save_predictions,bins=bins)
-                    if self.view == 'mistakes' and fp == 0 and fn == 0:
-                        continue
 
-                    if not save_predictions:
-                        cv2.imshow('pred', img)
-                        cv2.waitKey(0)
+                    self.logger.trace(bcolors.OKGREEN+'old_trackedLanes: ' +bcolors.ENDC+str(old_trackedLanes))
+                    self.logger.trace(bcolors.OKGREEN+'trackedLanes: ' +bcolors.ENDC+str(trackedLanes))
 
-        if save_predictions:
-            with open('predictions.pkl', 'wb') as handle:
-                pickle.dump(predictions, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        self.exp.eval_end_callback(dataloader.dataset.dataset, predictions, epoch)
+                    # pred_lanes_ordering.append(points[-1,0]) # Pegado al coche
+                    # pred_lanes_ordering.append(points[0,0]) # Lejos del coche
+
+
+                    """
+                    if trackedLanes is not None:
+                        laneTracker.update(trackedLanes)
+
+                        self.logger.trace(bcolors.OKGREEN+'pred_lanes_angle: ' +bcolors.ENDC+str(pred_lanes_angle))
+                        self.logger.trace(bcolors.OKGREEN+'pred_lanes_ordering: ' +bcolors.ENDC+str(pred_lanes_ordering))
+                    """
+
+                    # pred_lanes_angle=np.array(pred_lanes_angle)
+                    # sort_idxs=np.argsort(pred_lanes_angle).astype("int")
+
+                    # IF PREDICTION IS NOT NONE
+
+                    # POLYLINES2LANES
+                    # 0. Resample each of the detections
+                    for idx_i in range(len(predictions_3d)):
+                        new_poly= resample_laneline(predictions_3d[idx_i],dims=["ref","num","num","cat"])
+                        predictions_3d[idx_i]=new_poly
+
+
+                    # 1. Associate polylines together, with tracking information
+                    lanes=associate_polylines(predictions_3d,trackedLanes,thr_dist=[2.5,5.0], dims=["ref","query","num","cat"])
+                    self.logger.trace(bcolors.OKGREEN+'lanes: ' +bcolors.ENDC+str(lanes))
+
+                    save_local_info=False
+                    save_global_info=False
+                    save_point_cloud=True
+                    video=True
+
+                    if save_local_info:
+                        dataloader.dataset.save_local_info(idx, predictions_3d,trackedLanes,lanes)
+
+                    if save_global_info:
+                        predictions_3d_map=[]
+                        transform = dataloader.dataset.dataset.tf_tree.lookup_transform("map", "lidar")
+                        self.logger.trace(bcolors.OKGREEN+'transform (lidar2map):\n' +bcolors.ENDC+str(transform))
+
+
+                        for idx_i in range(len(predictions_3d)):
+                            lidar_coords=np.append(predictions_3d[idx_i][:,0:3],np.ones((predictions_3d[idx_i].shape[0],1)),axis=1).T # 4x npts (h)
+                            map_coords=np.matmul(transform,lidar_coords).T # (4x4)
+
+                            self.logger.debug(bcolors.OKGREEN+'map_coords:\n' +bcolors.ENDC+str(map_coords))
+                            map_coords=Homography2Cart(map_coords)
+                            self.logger.debug(bcolors.OKGREEN+'map_coords:\n' +bcolors.ENDC+str(map_coords))
+
+                            map_coords=np.append(map_coords,predictions_3d[idx_i][:,3:],axis=1)
+                            predictions_3d_map.append(map_coords)
+
+                        dataloader.dataset.save_global_info(idx, predictions_3d_map,trackedLanes,lanes)
+
+
+                    if save_point_cloud:
+                        """ pcb_fields=["x","y","z","type","poly_id","tracking_id"]"""
+                        for idx_i in range(len(predictions_3d)):
+                            pcb_points=predictions_3d[idx_i] # npts, 4
+
+                            poly_id_col=np.ones((predictions_3d[idx_i].shape[0],1))*poly_id
+                            pcb_points=np.append(pcb_points,poly_id_col,axis=1)
+                            tracking_id_col=np.ones((predictions_3d[idx_i].shape[0],1))*trackedLanes[idx_i,1]
+                            pcb_points=np.append(pcb_points,tracking_id_col,axis=1)
+                            point_cloud=np.append(point_cloud,pcb_points,axis=0)
+                            poly_id+=1
+
+
+                    # dataloader.dataset.save_global_info(idx, predictions_3d,trackedLanes,lanes)
+                    # update color dictionary
+                    for lane in lanes:
+                        if not lane[0] in colors_by_lane:
+                            colors_by_lane[lane[0]]=list(np.random.choice(range(256), size=3))
+
+                    if video:
+                        img_paint=(np.array(img,copy=True)*255).astype("uint8") # Torch to numpy array
+                        img_paint=np.swapaxes(img_paint, 0, 1)
+                        img_paint=np.swapaxes(img_paint, 1,2)
+
+                        dataloader.dataset.save_frames(idx,img_paint,predictions_3d,trackedLanes,lanes,colors_by_lane)
+
+
+        if save_point_cloud:
+            """ pcb_fields=["x","y","z","type","poly_id","tracking_id"]
+            device = o3d.core.Device("CPU:0")
+            dtype = o3d.core.float32
+            pcd = o3d.t.geometry.PointCloud(device)
+            pcd.point.positions=o3d.core.Tensor(point_cloud[:,:3], dtype, device)
+            pcd.point.poly_id = o3d.core.Tensor(point_cloud[:,4], dtype, device)
+            pcd.point.tracking_id = o3d.core.Tensor(point_cloud[:,5], dtype, device)
+            """
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(point_cloud[:,:3])
+
+            colors = point_cloud[:,3:].copy()
+            for col_idx in range(colors.shape[1]):
+                colors[:,col_idx]=255*(colors[:,col_idx]-np.min(colors[:,col_idx]))/(np.max(colors[:,col_idx])-np.min(colors[:,col_idx]))
+
+
+            colors = o3d.utility.Vector3dVector(colors)
+
+            # colors=np.append(colors,np.ones((colors.shape[0],1)),axis=1)
+            pcd.colors=colors
+
+            output_dir=dataloader.dataset.dataset.saving_dir
+            os.makedirs(output_dir, exist_ok=True)
+            pcb_path=os.path.join(output_dir,"point_cloud.ply")
+            self.logger.trace (bcolors.OKGREEN + "Saving point cloud in : " + bcolors.ENDC+ pcb_path)
+
+            # Save the point cloud to a file
+            o3d.io.write_point_cloud(pcb_path, pcd)
+
+
+
+        #             if self.view:
+        #                 img = (images[0].cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        #                 img, fp, fn = dataloader.dataset.draw_annotation(idx, img=img, pred=prediction[0],\
+        #                     save_predictions=save_predictions,bins=bins)
+        #                 if self.view == 'mistakes' and fp == 0 and fn == 0:
+        #                     continue
+
+        #                 if not save_predictions:
+        #                     cv2.imshow('pred', img)
+        #                     cv2.waitKey(0)
+
+        # if save_predictions:
+        #     with open('predictions.pkl', 'wb') as handle:
+        #         pickle.dump(predictions, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        # self.exp.eval_end_callback(dataloader.dataset.dataset, predictions, epoch)
 
     def get_train_dataloader(self):
         train_dataset = self.cfg.get_dataset('train')
