@@ -18,6 +18,13 @@ class Bosch(LaneDatasetLoader):
 
         self.root = root
 
+        self.dHeading=0
+        self.dDist=0
+        self.dDist=0
+        self.dHeading=0
+        self.dPitch=0
+        self.dRoll=0
+
         if root is None:
             raise Exception('Please specify the root directory')
 
@@ -153,16 +160,21 @@ class Bosch(LaneDatasetLoader):
         gps2lidar_path=os.path.join(self.calib_path,"calib_gps_lidar.txt")
 
         if os.path.isfile(gps2lidar_path):
-            self.logger.trace (bcolors.OKGREEN + "Adding calib (lidar2gps) from file" + bcolors.ENDC)
+            self.logger.trace (bcolors.OKGREEN + "Adding calib (lidar2gps) from file" + bcolors.ENDC+str(gps2lidar_path))
             self.tf_tree.add_transform_from_file("gps", "lidar",gps2lidar_path )
+            self.tf_tree.add_transform_from_file("gps_prev", "lidar_prev",gps2lidar_path )
+
         else:
             self.logger.trace (bcolors.OKGREEN + "Adding calib (lidar2gps) manually" + bcolors.ENDC)
             self.tf_tree.add_transform_data("gps", "lidar",-1.64584,0.0,-0.8,   0.0, -0.08, -0.08)
+            self.tf_tree.add_transform_data("gps_prev", "lidar_prev",-1.64584,0.0,-0.8,   0.0, -0.08, -0.08)
 
+
+        transform = self.tf_tree.lookup_transform("gps_prev", "lidar_prev")
+        self.logger.trace (bcolors.OKGREEN + "tf (lidar_prev2gps_prev):\n" + bcolors.ENDC+ str(transform))
 
         transform = self.tf_tree.lookup_transform("gps", "lidar")
         self.logger.trace (bcolors.OKGREEN + "tf (lidar2gps):\n" + bcolors.ENDC+ str(transform))
-
 
 
         self.cam_height=0.5
@@ -210,6 +222,7 @@ class Bosch(LaneDatasetLoader):
         files = glob.glob(pattern, recursive=True)
         files.sort()
 
+
         for file in files:
             self.annotations.append({'lanes': [], 'path': file})
 
@@ -226,6 +239,25 @@ class Bosch(LaneDatasetLoader):
 
     def UseSyncFile(self,from_file,to_file,file):
         row=self.sync.loc[self.sync[from_file] ==float(file)]
+
+        """Some frames contain incomplete information such as point clouds. We would like to search """
+        if len(row)==0:
+            row_idx=np.argmin(self.sync[from_file]-float(file))
+
+            if row_idx>=2:
+                row=self.sync.iloc[(row_idx-2):(row_idx+2),:]  # Print information around found index
+            else:
+                row=self.sync.iloc[0:(row_idx+2),:]  # Print information around found index
+
+            self.logger.trace (bcolors.OKGREEN + "row:\n" + bcolors.ENDC+ str(row.head()))
+
+            output_file='{:010d}'.format(self.sync.iloc[row_idx][to_file])
+
+            self.logger.trace (bcolors.OKGREEN + "Input file:" + bcolors.ENDC+ str(file)+
+            bcolors.OKGREEN + " output_file:" + bcolors.ENDC+ str(output_file))
+
+            return output_file
+
         # print("\n Row type ",type(row))
         # print("\ndf row: ",row)
         # print("\nDesired text file: ",row[to_file])

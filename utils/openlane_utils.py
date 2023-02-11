@@ -25,20 +25,20 @@ class bcolors:
 white_bv = True
 
 from scipy.optimize import linear_sum_assignment
-def associate_elements(old_trackedLanes, trackedLanes, thr_dist):
+def associate_elements(ref_array, query_array, thr_dist,tag_col=0,score_col=2):
     log = logging.getLogger('logger')
 
-    log.trace(bcolors.OKGREEN+"old_trackedLanes (function):"+bcolors.ENDC+str(old_trackedLanes))
-    log.trace(bcolors.OKGREEN+"trackedLanes (function):"+bcolors.ENDC+str(trackedLanes))
+    log.trace(bcolors.OKGREEN+"ref_array (function):\n"+bcolors.ENDC+str(ref_array))
+    log.trace(bcolors.OKGREEN+"query_array (function):\n"+bcolors.ENDC+str(query_array))
 
-    n = old_trackedLanes.shape[0]
-    m = trackedLanes.shape[0]
+    n = ref_array.shape[0]
+    m = query_array.shape[0]
 
     cost_matrix = np.zeros((n, m))
     infoCount=0
     for i in range(n):
         for j in range(m):
-            diff = abs(old_trackedLanes[i,0] - trackedLanes[j,0])
+            diff = abs(ref_array[i,score_col] - query_array[j,score_col]) # compare scores
             if diff > thr_dist:
                 cost_matrix[i, j] = 100
             else:
@@ -47,48 +47,40 @@ def associate_elements(old_trackedLanes, trackedLanes, thr_dist):
     log.trace(bcolors.OKGREEN+"cost_matrix (function):\n"+bcolors.ENDC+str(cost_matrix))
 
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
-    # i -> old_tracked; j-> trackedLanes
+    # i -> old_tracked; j-> query_array
 
     for i, j in zip(row_ind, col_ind):
         if cost_matrix[i, j]<=thr_dist:
-            trackedLanes[j,1]=old_trackedLanes[i,1]
+            query_array[j,tag_col]=ref_array[i,tag_col] # set tags
 
-    # sort_idxs=np.argsort(trackedLanes[:,0])
-    # sort_idxs=sort_idxs[::-1]
-    # trackedLanes=trackedLanes[sort_idxs,:]
+    # Sort ref_array according to their tags
+    sort_idxs=np.argsort(ref_array[:,tag_col])
+    ref_array=ref_array[sort_idxs,:]
 
-
-    sort_idxs=np.argsort(old_trackedLanes[:,1])
-    old_trackedLanes=old_trackedLanes[sort_idxs,:]
-
-    log.trace(bcolors.OKGREEN+"old_trackedLanes (after linear assignment):"+bcolors.ENDC+str(old_trackedLanes))
-    log.trace(bcolors.OKGREEN+"trackedLanes ( after linear assignment):"+bcolors.ENDC+str(trackedLanes))
+    log.trace(bcolors.OKGREEN+"ref_array (after linear assignment)\n:"+bcolors.ENDC+str(ref_array))
+    log.trace(bcolors.OKGREEN+"query_array ( after linear assignment)\n:"+bcolors.ENDC+str(query_array))
 
 
-    noInfo_idxs=np.where(np.isnan(trackedLanes[:,1]))[0]
+    noInfo_idxs=np.where(np.isnan(query_array[:,tag_col]))[0] # search in query_array where there is no tag info
     for idx_i in noInfo_idxs:
-        for idx_j in range(old_trackedLanes.shape[0]-1):
-            if ((idx_j==0) and  (trackedLanes[idx_i,0]<old_trackedLanes[0,0])):
+        for idx_j in range(ref_array.shape[0]-1):
 
-                mask = ~np.isnan(trackedLanes[:,1])
-                values  = trackedLanes[mask,1]
-                values=np.append(values,old_trackedLanes[:,1])
-                trackedLanes[idx_i,1]=np.min(values)-1
+            if ((idx_j==0) and  (query_array[idx_i,score_col]<ref_array[0,score_col])): # tag smaller than first tag of old_trackedLaness
+                mask = ~np.isnan(query_array[:,tag_col]) # query_array mask where there is info
+                values  = query_array[mask,tag_col] # valores tag de query_array
+                values=np.append(values,ref_array[:,tag_col]) # valores tag de ref_array
+                query_array[idx_i,tag_col]=np.min(values)-1
 
-            elif ( (trackedLanes[idx_i,0]>old_trackedLanes[idx_j,0]) and  (trackedLanes[idx_i,0]<=old_trackedLanes[idx_j+1,0]) ):
-                trackedLanes[idx_i,1]=0.5*(old_trackedLanes[idx_j,1]+old_trackedLanes[idx_j+1,1])
+            elif ( (query_array[idx_i,score_col]>ref_array[idx_j,score_col]) and  (query_array[idx_i,score_col]<=ref_array[idx_j+1,score_col]) ):
+                query_array[idx_i,tag_col]=0.5*(ref_array[idx_j,tag_col]+ref_array[idx_j+1,tag_col])
 
-        if (trackedLanes[idx_i,0]>old_trackedLanes[-1,0]):
-            mask = ~np.isnan(trackedLanes[:,1])
-            values  = trackedLanes[mask,1]
-            values=np.append(values,old_trackedLanes[:,1])
-            trackedLanes[idx_i,1]=np.max(values)+1
+        if (query_array[idx_i,score_col]>ref_array[-1,score_col]):
+            mask = ~np.isnan(query_array[:,tag_col]) # tag values of query_array
+            values  = query_array[mask,tag_col]
+            values=np.append(values,ref_array[:,tag_col]) # tag values of OldTrackedLanes
+            query_array[idx_i,tag_col]=np.max(values)+1
 
-
-    # original_idxs = np.argsort(sort_idxs)
-    # trackedLanes = trackedLanes[original_idxs, :]
-
-    return trackedLanes
+    return query_array
 
 
 
@@ -104,7 +96,7 @@ def prepare4resampling(lane,dims=["ref","num","num","cat"],sem_weight=True):
     # Iterate over unique x values and calculate mean y values
     for unique_value in unique_ref:
         duplicates=lane[lane[:, ref] == unique_value]
-        if sem_weight: # filter results that do not overlap with semantics
+        if sem_weight and len(dims)>=4: # filter results that do not overlap with semantics
             mask=duplicates[:, 3] != -1
 
             if np.sum(mask)>0:
@@ -123,6 +115,70 @@ def prepare4resampling(lane,dims=["ref","num","num","cat"],sem_weight=True):
         new_lane.append(row)
 
     return np.array(new_lane)
+
+
+
+
+
+poly_01_range=pyinterval[1,0]
+poly_02_range=pyinterval[1,0]
+overlap=poly_01_range&poly_02_range
+
+def associate_polylines_with_tracking(polylines,tracking_LUT, thr_dist=[3.5,5.0],dims=["ref","query","num","cat"]):
+    log = logging.getLogger('logger')
+    tag_col=0
+
+    ref=dims.index("ref")
+    query=dims.index("query")
+    lanes=[]
+
+    """ polylines follow the same order as  tracking_LUT"""
+
+    for idx_i in range(len(tracking_LUT)-1):
+
+        if (polylines[idx_i].shape[0]>0) and (polylines[idx_i+1].shape[0]>0):
+
+            poly_01_range=pyinterval[polylines[(idx_i)][0,ref],polylines[(idx_i)][-1,ref]]
+            poly_02_range=pyinterval[polylines[(idx_i+1)][0,ref],polylines[(idx_i+1)][-1,ref]]
+            overlap=poly_01_range&poly_02_range
+
+            log.debug(bcolors.OKGREEN+"poly_01_range:"+bcolors.ENDC+str(poly_01_range))
+            log.debug(bcolors.OKGREEN+"poly_02_range:"+bcolors.ENDC+str(poly_02_range))
+
+            # si hay overlap, hay possible matching to lanes
+            if len(overlap)>0: # overlap is a pyinterval
+                overlap=overlap[0]
+                log.trace(bcolors.OKGREEN+"overlap:"+bcolors.ENDC+str(overlap))
+
+                tag_01=tracking_LUT[(idx_i),tag_col]
+                tag_02=tracking_LUT[(idx_i+1),tag_col]
+
+                poly_01=polylines[(idx_i)]
+                poly_02=polylines[(idx_i+1)]
+
+                poly_01=poly_01[ (poly_01[:, ref] >= overlap[0])& (poly_01[:, ref] <= overlap[1])]
+                poly_02=poly_02[ (poly_02[:, ref] >= overlap[0])& (poly_02[:, ref] <= overlap[1])]
+
+                log.debug(bcolors.OKGREEN+"poly_01:\n"+bcolors.ENDC+str(poly_01))
+                log.debug(bcolors.OKGREEN+"poly_02:\n"+bcolors.ENDC+str(poly_02))
+
+
+                diff=np.absolute(poly_01[:, query]-poly_02[:, query])
+                log.debug(bcolors.OKGREEN+"diff:\n"+bcolors.ENDC+str(diff))
+
+                diff=np.mean(diff)
+                log.debug(bcolors.OKGREEN+"diff:"+bcolors.ENDC+str(diff))
+
+                if((diff>=thr_dist[0]) and  (diff<=thr_dist[1])) :
+                    # lanes.append(idx_i,(idx_i+1))
+                    lanes.append([tag_01,tag_02])
+
+        else:
+            breakpoint()
+    return np.array(lanes)
+
+
+
 
 
 def associate_polylines(polylines,trackedPolys, thr_dist=[3.5,5.0],dims=["ref","query","num","cat"]):
@@ -173,12 +229,184 @@ def associate_polylines(polylines,trackedPolys, thr_dist=[3.5,5.0],dims=["ref","
 
     return np.array(lanes)
 
+"""
+numerator = -math.sqrt(a22**2) - a12 * b - 2 * a * a12 * t1 - 2 * a * a11 * a12 * x + a22
+denominator = 2 * a * a12**2
+
+"""
+
+def transform_equation(a, b, c, a11, a12, a21, a22, t1, t2,x):
+    numerator = -math.sqrt(a12**2 * b**2 - 2 * a12 * a22 * b - 4 * a * a12**2 * c - 4 * a * a12 * a22 * t1 + 4 * a * a12**2 * t2 - 4 * a * a11 * a12 * a22 * x + 4 * a * a21 * a12**2 * x + a22**2) - a12 * b - 2 * a * a12 * t1 - 2 * a * a11 * a12 * x + a22
+    denominator = 2 * a * a12**2
+    result=numerator / denominator
+
+    return result
+
+
+
+def predict_equation_V3(old_coeffs,lidar_prev2lidar_tf, xs_prev,filter_negative=True):
+    log = logging.getLogger('logger')
+    #dDist indica que el coche esta avanzando
+
+    poly_predictions=[]
+    # for old_coeff in old_coeffs:
+
+    for key in list(old_coeffs.keys()):
+        old_coeff=old_coeffs[key]
+        log.trace(bcolors.OKGREEN+"old_coeff:"+bcolors.ENDC+str(old_coeff))
+
+        ys_prev=[]
+        zs_prev=[]
+
+        """"
+        for x_prev in xs_prev:
+            ys_prev.append(old_coeff[0,0]*x_prev**2+old_coeff[0,1]*x_prev+old_coeff[0,2])
+            zs_prev.append(old_coeff[1,0]*x_prev**2+old_coeff[1,1]*x_prev+old_coeff[1,2])
+        """
+
+        ys_prev= np.polyval(old_coeff[0,:], xs_prev)   # evaluate the polynomial
+        zs_prev= np.polyval(old_coeff[1,:], xs_prev)   # evaluate the polynomial
+
+
+        info_prev=np.append(np.array(xs_prev).reshape(-1,1),np.array(ys_prev).reshape(-1,1),axis=1)
+        info_prev=np.append(info_prev,np.array(zs_prev).reshape(-1,1),axis=1)
+        info_prev=np.append(info_prev,np.ones((info_prev.shape[0],1)),axis=1)
+
+        info_current=np.matmul(lidar_prev2lidar_tf,info_prev.T).T # npts,3
+
+        for dim in range(info_current.shape[1]):
+            info_current[:,dim]= info_current[:,dim]/info_current[:,-1]
+        info_current=info_current[:,:-1]
+
+
+        sort_idxs=np.argsort((info_current[:,0]))
+
+        if not ((sort_idxs==np.arange(info_current.shape[0])).all()):
+            breakpoint()
+
+        # if filter_negative:
+        #     info_current=info_current[info_current[:,0]>=0]
+
+        poly_predictions.append(info_current)
+
+
+    log.trace(bcolors.OKGREEN+"poly_predictions:"+bcolors.ENDC+str(poly_predictions))
+
+    return poly_predictions
+
+
+
+def predict_equation_V2(old_coeffs,dHeading,dPitch,dDist, x_samples):
+    log = logging.getLogger('logger')
+    #dDist indica que el coche esta avanzando
+    x_samples=x_samples+dDist
+
+    # R_heading=getRotation_2d(-dHeading,units="degrees") # Prueba_01
+    R_heading=getRotation_2d(dHeading,units="degrees") # Prueba_02
+    T_heading=[-dDist,0]
+
+    A_heading=np.append(R_heading,np.array(T_heading).reshape(-1,1),axis=1)
+    A_heading=np.append(A_heading,np.array([0,0,1]).reshape(1,-1),axis=0)
+    A_heading_inv=np.linalg.inv(A_heading)
+
+    R_pitch=getRotation_2d(dPitch,units="degrees") # Prueba_02
+
+
+
+
+    log.trace(bcolors.OKGREEN+"Rotation matrix:\n"+bcolors.ENDC+str(R))
+    log.trace(bcolors.OKGREEN+"Translation matrix:\n"+bcolors.ENDC+str(T))
+    log.trace(bcolors.OKGREEN+"Affine transformation matrix:\n"+bcolors.ENDC+str(A))
+    poly_predictions=[]
+
+    for old_coeff in old_coeffs:
+        log.trace(bcolors.OKGREEN+"old_coeff:"+bcolors.ENDC+str(old_coeff))
+
+        y_prev=[]
+        zs=[]
+
+        for x_prev in x_samples:
+            y_prev.append(old_coeff[0,0]*x_prev**2+old_coeff[0,1]*x_prev+old_coeff[0,2])
+            zs.append(old_coeff[1,0]*x_prev**2+old_coeff[1,1]*x_prev+old_coeff[1,2])
+
+
+        info_prev=np.append(np.array(x_samples).reshape(-1,1),np.array(y_prev).reshape(-1,1),axis=1)
+        info_prev=np.append(info_prev,np.ones((info_prev.shape[0],1)),axis=1)
+        # info_prev=np.append(info_prev,np.array(zs).reshape(-1,1),axis=1)
+
+
+        info_current=np.matmul(A,info_prev.T).T # npts,3
+        info_current[:,0]= info_current[:,0]/info_current[:,2]
+        info_current[:,1]=info_current[:,1]/info_current[:,2]
+        info_current=info_current[:,:2]
+
+        prediction=np.append(info_current,np.array(zs).reshape(-1,1),axis=1)
+
+        sort_idxs=np.argsort((prediction[:,0]))
+        assert((sort_idxs==np.arange(prediction.shape[0])).all())
+
+        poly_predictions.append(prediction)
+
+
+    log.trace(bcolors.OKGREEN+"poly_predictions:"+bcolors.ENDC+str(poly_predictions))
+
+    return poly_predictions
+
+def predict_equation(old_coeffs,dHeading,dDist, x_samples):
+    log = logging.getLogger('logger')
+
+    R=getRotation_2d(dHeading,units="degrees")
+    T=[dDist,0]
+
+    log.trace(bcolors.OKGREEN+"Rotation matrix:\n"+bcolors.ENDC+str(R))
+    log.trace(bcolors.OKGREEN+"Translation matrix:\n"+bcolors.ENDC+str(T))
+
+    a11=R[0,0]
+    a21=R[1,0]
+    a12=R[0,1]
+    a22=R[1,1]
+    t1=T[0]
+    t2=T[1]
+
+    poly_predictions=[]
+
+
+    for old_coeff in old_coeffs:
+        log.trace(bcolors.OKGREEN+"old_coeff:"+bcolors.ENDC+str(old_coeff))
+
+        ys=[]
+        zs=[]
+        for x in x_samples:
+            ys.append(transform_equation(old_coeff[0,0],old_coeff[0,1],old_coeff[0,2], a11, a12, a21, a22, t1, t2,x))
+            zs.append(transform_equation(old_coeff[1,0],old_coeff[1,1],old_coeff[1,2], a11, a12, a21, a22, t1, t2,x))
+
+        prediction=np.append(np.array(x_samples).reshape(-1,1),np.array(ys).reshape(-1,1),axis=1)
+        prediction=np.append(prediction,np.array(zs).reshape(-1,1),axis=1)
+        poly_predictions.append(prediction)
+
+
+    log.trace(bcolors.OKGREEN+"poly_predictions:"+bcolors.ENDC+str(poly_predictions))
+
+    return poly_predictions
+
+
+def resample_laneline_with_coeffs(coeffs , x_samples):
+    log = logging.getLogger('logger')
+
+    new_y=np.polyval(coeffs[0,:],x_samples)
+    new_z=np.polyval(coeffs[1,:],x_samples)
+
+    new_info=np.append(x_samples.reshape(-1,1),new_y.reshape(-1,1),axis=1)
+    new_info=np.append(new_info,new_z.reshape(-1,1),axis=1)
+
+    log.trace(bcolors.OKGREEN+"new_info:\n"+bcolors.ENDC+str(new_info))
+    return new_info
 
 
 
 
 
-def resample_laneline(lane, dims=["ref","num","num","cat"]):
+def resample_laneline(lane, dims=["ref","num","num","cat"],filter_negative=True):
     log = logging.getLogger('logger')
 
     """
@@ -201,27 +429,67 @@ def resample_laneline(lane, dims=["ref","num","num","cat"]):
     new_ref=np.append(np.arange(min_ref,max_ref,1),max_ref)
     new_lane=np.empty((new_ref.shape[0],len(dims)))
 
-    for idx_i in range(len(dims)):
-        if dims[idx_i]=="num":
-            if lane.shape[0]>=3: # quadratic
-                new_info = interp1d(lane[:,ref], lane[:,idx_i], kind='quadratic',fill_value="extrapolate")(new_ref)
-            elif lane.shape[0]>=2: #  linear
-                new_info = interp1d(lane[:,ref], lane[:,idx_i], kind='linear',fill_value="extrapolate")(new_ref)
-            elif lane.shape[0]>=1: # constant
-                new_info=np.squeeze(np.ones((new_ref.shape[0],1)))*lane[0,ref]
+    resample_option=1
+    tracked_coeffs=[]
 
-        elif dims[idx_i]=="cat": # categorical
-            new_info = interp1d(lane[:,ref], lane[:,idx_i], kind='nearest',fill_value="extrapolate")(new_ref)
+    if resample_option==1:
+        for idx_i in range(len(dims)):
+            if dims[idx_i]=="num":
+                if lane.shape[0]>=3: # quadratic
+                    coeffs= np.polyfit(lane[:,ref], lane[:,idx_i], 2)
+                elif lane.shape[0]>=2: #  linear
+                    coeffs= np.polyfit(lane[:,ref], lane[:,idx_i], 1)
+                elif lane.shape[0]>=1: # constant
+                    coeffs= np.polyfit(lane[:,ref], lane[:,idx_i], 0)
 
-        elif dims[idx_i]=="ref":
-            new_info=new_ref
+                new_info=np.polyval(coeffs,new_ref)
 
-        new_lane[:,idx_i]=new_info
+                tracked_coeffs.append(coeffs)
 
+            elif dims[idx_i]=="cat": # categorical
+                if  lane.shape[0]>=2: #  linear
+                    new_info = interp1d(lane[:,ref], lane[:,idx_i], kind='nearest',fill_value="extrapolate")(new_ref)
+                else:
+                    new_info=(np.squeeze(np.ones((new_ref.shape[0],1)))*lane[0,idx_i]).astype("int")
+
+            elif dims[idx_i]=="ref":
+                new_info=new_ref
+
+            new_lane[:,idx_i]=new_info
+
+
+    elif resample_option==2:
+
+
+        for idx_i in range(len(dims)):
+            if dims[idx_i]=="num":
+                if lane.shape[0]>=3: # quadratic
+                    new_info = interp1d(lane[:,ref], lane[:,idx_i], kind='quadratic',fill_value="extrapolate")(new_ref)
+                elif lane.shape[0]>=2: #  linear
+                    new_info = interp1d(lane[:,ref], lane[:,idx_i], kind='linear',fill_value="extrapolate")(new_ref)
+                elif lane.shape[0]>=1: # constant
+                    new_info=np.squeeze(np.ones((new_ref.shape[0],1)))*lane[0,idx_i]
+
+            elif dims[idx_i]=="cat": # categorical
+                if  lane.shape[0]>=2: #  linear
+                    new_info = interp1d(lane[:,ref], lane[:,idx_i], kind='nearest',fill_value="extrapolate")(new_ref)
+                else:
+                    new_info=(np.squeeze(np.ones((new_ref.shape[0],1)))*lane[0,idx_i]).astype("int")
+
+            elif dims[idx_i]=="ref":
+                new_info=new_ref
+
+            new_lane[:,idx_i]=new_info
+
+
+
+    if filter_negative:
+        new_lane=new_lane[new_lane[:,0]>=5]
 
     log.debug(bcolors.OKGREEN+"new_lane:\n"+bcolors.ENDC+str(new_lane))
+    tracked_coeffs=np.array(tracked_coeffs)
 
-    return new_lane
+    return new_lane,tracked_coeffs
 
 
 
@@ -263,7 +531,13 @@ def getRotation(angle,axis=0,units="radians"):
 
 
 
-def getRotation_2d(angle,axis=0,units="radians"):
+def getRotation_2d(angle,units="radians"):
+    log = logging.getLogger('logger')
+
+    if units.lower()=="degrees":
+        angle=angle*math.pi/180 # From degrees to radians
+        log.trace(bcolors.OKGREEN+"Input to degrees "+bcolors.ENDC)
+
     R= np.array([[np.cos(angle), -np.sin(angle)],
                 [ np.sin(angle),  np.cos(angle)]])
     return R

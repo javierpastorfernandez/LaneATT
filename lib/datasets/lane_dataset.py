@@ -891,8 +891,157 @@ class LaneDataset(Dataset):
 
 
 
-    def save_frames(self,idx,img,predictions_3d,trackedPolys,lanes,colors,fontScale=1.0,fontThickness=3):
 
+    def save_frames_with_tracking(self,idx,img,predictions_3d,tracking_LUT,lanes,colors,tracked_polys_lidar=False,filter_negative=True,fontScale=1.0,fontThickness=3):
+        """
+        predictions_3d=polylines_with_tracking
+        trackedPolys=tracking_LUT
+        """
+        tag_col=0
+
+        # self.logger.trace (bcolors.OKGREEN + "tracking_LUT:(draw) " + bcolors.ENDC+ str(tracking_LUT))
+
+
+        img_path = self.dataset[idx]['path']
+        self.logger.trace (bcolors.OKGREEN + "img_path: " + bcolors.ENDC+ str(img_path))
+        filename=(img_path.split('/')[-1]) # with png
+        self.logger.trace (bcolors.OKGREEN + "filename: " + bcolors.ENDC+ str(filename))
+
+
+        output_dir=self.dataset.saving_dir
+        output_dir=os.path.join(output_dir,"frames")
+        os.makedirs(output_dir, exist_ok=True)
+
+        path_img=os.path.join(output_dir,filename)
+        self.logger.trace (bcolors.OKGREEN + "writting image in: " + bcolors.ENDC+ path_img)
+
+        # PROJECT FROM LIDAR TO IMAGE
+        predictions_img=[]
+        for prediction_3d in predictions_3d:
+            points_h=prediction_3d.copy()[:,:3] # xyz
+            if filter_negative:
+                points_h=points_h[points_h[:,0]>=0]
+
+            points_h=np.append(points_h,np.ones((points_h.shape[0],1)),axis=1)
+            self.logger.trace (bcolors.OKGREEN + "points_h:\n" + bcolors.ENDC+ str(points_h))
+
+            pts_img=np.matmul(points_h,self.dataset.P_lidar2img_resize) # dim,nPts *presult (4*3)= npts,3
+            pts_img=Homography2Cart(pts_img)
+            self.logger.debug (bcolors.OKGREEN + "pts_img:\n" + bcolors.ENDC+ str(pts_img))
+            predictions_img.append(pts_img)
+
+
+        for idx_i in range(len(predictions_img)):
+            pts_img=predictions_img[idx_i]
+            if pts_img.shape[0]>0: # we can be loading an empty polyline
+                pts_draw=pts_img.copy().reshape((-1, 1, 2)).round().astype("int32")
+
+                if tracking_LUT[idx_i,2]==-1: # Predicted
+                    img = cv2.polylines(img, [pts_draw],False, (0,255,0), 2)
+
+                elif np.isnan(tracking_LUT[idx_i,2]): # there is a gap that cannot be covered by anyone
+                    img = cv2.polylines(img, [pts_draw],False, (0,0,255), 2)
+
+                else: # tracked
+                    img = cv2.polylines(img, [pts_draw],False, (255,0,0), 2)
+                    self.logger.trace (bcolors.OKGREEN + "pts_draw:\n" + bcolors.ENDC+ str(pts_draw))
+
+
+
+                labelSize=cv2.getTextSize(str(tracking_LUT[idx_i,tag_col]),cv2.FONT_HERSHEY_SIMPLEX,fontScale,fontThickness)
+                if pts_img.shape[0]>3:
+                    pos_x=int(pts_img[3,0]-0.5*labelSize[0][0])
+                    pos_y=int(pts_img[3,1])
+
+                else:
+                    pos_x=int(pts_img[0,0]-0.5*labelSize[0][0])
+                    pos_y=int(pts_img[0,1])
+
+                self.logger.debug(bcolors.OKGREEN+'pos_x: ' +bcolors.ENDC+str(pos_x)+bcolors.OKGREEN+' pos_y: ' +bcolors.ENDC+str(pos_y))
+                img=cv2.putText(img, str(tracking_LUT[idx_i,tag_col]), (pos_x,pos_y), cv2.FONT_HERSHEY_SIMPLEX ,fontScale, (250,250,250), fontThickness, cv2.LINE_AA)
+
+        if tracked_polys_lidar:
+            tracked_polys_img=[]
+            for tracked_poly_3d in tracked_polys_lidar:
+                points_h=tracked_poly_3d.copy()[:,:3] # xyz
+                points_h=np.append(points_h,np.ones((points_h.shape[0],1)),axis=1)
+                self.logger.trace (bcolors.OKGREEN + "points_h: (tracking_polys)\n" + bcolors.ENDC+ str(points_h))
+
+                pts_img=np.matmul(points_h,self.dataset.P_lidar2img_resize) # dim,nPts *presult (4*3)= npts,3
+                pts_img=Homography2Cart(pts_img)
+                self.logger.trace (bcolors.OKGREEN + "pts_img:(tracking_polys)\n" + bcolors.ENDC+ str(pts_img))
+
+
+                # The problem is with pts_img getting below 0
+                pts_img=pts_img[pts_img[:,0]>=0]
+                pts_img=pts_img[pts_img[:,1]>=0]
+                tracked_polys_img.append(pts_img)
+
+
+
+            # if self.dataset.dDist>20:
+            #     breakpoint() # HARDCODED
+
+            for idx_i in range(len(tracked_polys_img)):
+                tracked_poly_img=tracked_polys_img[idx_i]
+
+                pts_draw=tracked_poly_img.copy().reshape((-1, 1, 2)).round().astype("int32")
+                img = cv2.polylines(img, [pts_draw],False, (0,60,60), 1)
+
+
+
+        dHeading = "dHeading: {:.3f}".format(self.dataset.dHeading)
+        dPitch = "dPitch: {:.3f}".format(self.dataset.dPitch)
+        dRoll = "dRoll: {:.3f}".format(self.dataset.dRoll)
+
+
+        img=cv2.putText(img, str(dHeading), (10,15), cv2.FONT_HERSHEY_PLAIN ,1, (20,20,20), 1, cv2.LINE_AA)
+        img=cv2.putText(img, str(dPitch), (10,40), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
+        img=cv2.putText(img, str(dRoll), (10,65), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
+
+
+        alpha=0.2
+        overlay=img.copy()
+        self.logger.trace (bcolors.OKGREEN + "lanes: " + bcolors.ENDC+ str(lanes))
+        self.logger.trace (bcolors.OKGREEN + "colors: " + bcolors.ENDC+ str(colors))
+
+        for lane in lanes:
+            # color=np.array(colors[lane[0]]).astype("int")
+            color=np.array(colors[lane[0]]).astype("int")
+            color=(int(color[0]),int(color[1]),int(color[2]))
+
+
+            self.logger.trace (bcolors.WARNING + "color: " + bcolors.ENDC+ str(color))
+
+            lane_01_idx=np.where(tracking_LUT[:,tag_col]==lane[0])[0][0].astype("int")
+            lane_02_idx=np.where(tracking_LUT[:,tag_col]==lane[1])[0][0].astype("int")
+
+            self.logger.trace (bcolors.OKGREEN + "lane_01_idx: " + bcolors.ENDC+ str(lane_01_idx))
+            self.logger.trace (bcolors.OKGREEN + "lane_02_idx: " + bcolors.ENDC+ str(lane_02_idx))
+
+            lane_poly=np.append(predictions_img[lane_01_idx],predictions_img[lane_02_idx][::-1,:],axis=0)
+            overlay = cv2.fillPoly(overlay, pts=np.int32([lane_poly]), color=color)
+
+        img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0) # Following line overlays transparent rectangle over the image
+
+        self.logger.trace (bcolors.OKGREEN + "writting image in: " + bcolors.ENDC+ path_img)
+        cv2.imwrite(path_img,img)
+
+
+
+
+
+
+
+
+
+
+
+    def save_frames(self,idx,img,predictions_3d,trackedPolys,lanes,colors,tracked_polys_lidar=False,fontScale=1.0,fontThickness=3):
+        """
+        predictions_3d=polylines_with_tracking
+        trackedPolys=tracking_LUT
+        """
         # self.logger.trace (bcolors.OKGREEN + "trackedPolys:(draw) " + bcolors.ENDC+ str(trackedPolys))
 
 
@@ -940,6 +1089,42 @@ class LaneDataset(Dataset):
 
             self.logger.debug(bcolors.OKGREEN+'pos_x: ' +bcolors.ENDC+str(pos_x)+bcolors.OKGREEN+' pos_y: ' +bcolors.ENDC+str(pos_y))
             img=cv2.putText(img, str(trackedPolys[idx_i,1]), (pos_x,pos_y), cv2.FONT_HERSHEY_SIMPLEX ,fontScale, (250,250,250), fontThickness, cv2.LINE_AA)
+
+
+        dHeading = "dHeading: {:.3f}".format(self.dataset.dHeading)
+        dDist = "Modulus: {:.3f}".format(self.dataset.dDist)
+
+        img=cv2.putText(img, str(dHeading), (10,15), cv2.FONT_HERSHEY_PLAIN ,1, (20,20,20), 1, cv2.LINE_AA)
+        img=cv2.putText(img, str(dDist), (10,40), cv2.FONT_HERSHEY_PLAIN ,1, (20,20,20), 1, cv2.LINE_AA)
+
+        # PROJECT PREDICTIONS FROM LIDAR TO IMAGE
+        if tracked_polys_lidar:
+            tracked_polys_img=[]
+            for tracked_poly_3d in tracked_polys_lidar:
+                points_h=tracked_poly_3d.copy()[:,:3] # xyz
+                points_h=np.append(points_h,np.ones((points_h.shape[0],1)),axis=1)
+                self.logger.trace (bcolors.OKGREEN + "points_h:\n" + bcolors.ENDC+ str(points_h))
+
+                pts_img=np.matmul(points_h,self.dataset.P_lidar2img_resize) # dim,nPts *presult (4*3)= npts,3
+                pts_img=Homography2Cart(pts_img)
+                self.logger.trace (bcolors.OKGREEN + "pts_img:\n" + bcolors.ENDC+ str(pts_img))
+
+
+                # The problem is with pts_img getting below 0
+                pts_img=pts_img[pts_img[:,0]>=0]
+                pts_img=pts_img[pts_img[:,1]>=0]
+                tracked_polys_img.append(pts_img)
+
+
+
+            # if self.dataset.dDist>20:
+            #     breakpoint() # HARDCODED
+
+            for idx_i in range(len(tracked_polys_img)):
+                tracked_poly_img=tracked_polys_img[idx_i]
+
+                pts_draw=tracked_poly_img.copy().reshape((-1, 1, 2)).round().astype("int32")
+                img = cv2.polylines(img, [pts_draw],False, (0,60,60), 1)
 
 
         alpha=0.2
