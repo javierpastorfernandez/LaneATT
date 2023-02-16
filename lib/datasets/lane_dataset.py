@@ -1,7 +1,8 @@
 import logging
 import pdb
 import os, glob, sys
-
+from interval import interval as pyinterval
+import pandas as pd
 
 import numpy as np
 from scipy.interpolate import InterpolatedUnivariateSpline,interp1d,lagrange
@@ -778,6 +779,9 @@ class LaneDataset(Dataset):
 
     def Detectionto3d(self,plane_points,img,sem_img,label,plot=True):
         # Resize to img shape
+        """ Este modo de interpolación va a hacer perder mucha informacion"""
+
+
         sem_img = cv2.resize(sem_img, (img.shape[1],img.shape[0]), interpolation = cv2.INTER_AREA)
 
         mask=np.zeros((img.shape[0],img.shape[1]))
@@ -799,7 +803,7 @@ class LaneDataset(Dataset):
 
             detection= np.array(np.where(labels.astype("int") == (i+1))).T # 360, 600
             detection[:,[0,1]]=detection[:,[1,0]]
-            detection_coordinates.append(detection)
+            detection_coordinates.append(detection) # img coordinates
 
 
         color_dashed = np.asarray([255, 0, 128])
@@ -811,7 +815,11 @@ class LaneDataset(Dataset):
 
         for i in range(len(detection_coordinates)):
             bool_mask = (plane_points[:, None] == detection_coordinates[i]).all(-1).any(1)
-            indexes =  np.squeeze(np.where(bool_mask))
+            indexes =  np.where(bool_mask)[0]
+            # indexes =  np.squeeze(np.where(bool_mask))
+
+            self.logger.trace (bcolors.OKGREEN + "indexes (try):" + bcolors.ENDC+ str(indexes))
+
             detection_3d=plane_points[indexes]
             indexes=np.append(indexes.reshape(-1,1),-1*np.ones((indexes.shape[0],1)),axis=1)
 
@@ -853,7 +861,6 @@ class LaneDataset(Dataset):
             detection_3d_mask=np.zeros((img.shape[0],img.shape[1]))
 
             for i in range(len(detection_coordinates)):
-
                 # Paint original detection points
                 points = detection_coordinates[i].round().astype("int32")
                 points = points.reshape((-1, 1, 2))
@@ -892,7 +899,8 @@ class LaneDataset(Dataset):
 
 
 
-    def save_frames_with_tracking(self,idx,img,predictions_3d,tracking_LUT,lanes,colors,tracked_polys_lidar=False,filter_negative=True,fontScale=1.0,fontThickness=3):
+    def save_frames_with_tracking(self,idx,img,predictions_3d,tracking_LUT,lanes,colors,\
+        point_cloud_exist=True,tracked_polys_lidar=False,filter_negative=True,fontScale=1.0,fontThickness=3):
         """
         predictions_3d=polylines_with_tracking
         trackedPolys=tracking_LUT
@@ -900,7 +908,6 @@ class LaneDataset(Dataset):
         tag_col=0
 
         # self.logger.trace (bcolors.OKGREEN + "tracking_LUT:(draw) " + bcolors.ENDC+ str(tracking_LUT))
-
 
         img_path = self.dataset[idx]['path']
         self.logger.trace (bcolors.OKGREEN + "img_path: " + bcolors.ENDC+ str(img_path))
@@ -937,7 +944,11 @@ class LaneDataset(Dataset):
                 pts_draw=pts_img.copy().reshape((-1, 1, 2)).round().astype("int32")
 
                 if tracking_LUT[idx_i,2]==-1: # Predicted
-                    img = cv2.polylines(img, [pts_draw],False, (0,255,0), 2)
+                    if point_cloud_exist:
+                        img = cv2.polylines(img, [pts_draw],False, (0,255,0), 2)
+                    else:
+                        img = cv2.polylines(img, [pts_draw],False, (0,255,255), 2)
+
 
                 elif np.isnan(tracking_LUT[idx_i,2]): # there is a gap that cannot be covered by anyone
                     img = cv2.polylines(img, [pts_draw],False, (0,0,255), 2)
@@ -994,10 +1005,16 @@ class LaneDataset(Dataset):
         dPitch = "dPitch: {:.3f}".format(self.dataset.dPitch)
         dRoll = "dRoll: {:.3f}".format(self.dataset.dRoll)
 
+        UTM_E = "UTM_E: {:.3f}".format(self.dataset.UTM_E)
+        UTM_N = "UTM_N: {:.3f}".format(self.dataset.UTM_N)
 
-        img=cv2.putText(img, str(dHeading), (10,15), cv2.FONT_HERSHEY_PLAIN ,1, (20,20,20), 1, cv2.LINE_AA)
-        img=cv2.putText(img, str(dPitch), (10,40), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
-        img=cv2.putText(img, str(dRoll), (10,65), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
+        img=cv2.putText(img, str(filename.split(".")[0]), (20,15), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
+        img=cv2.putText(img, str(UTM_E), (20,40), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
+        img=cv2.putText(img, str(UTM_N), (20,65), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
+
+        img=cv2.putText(img, str(dHeading), (img.shape[1]-200,15), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
+        img=cv2.putText(img, str(dPitch), (img.shape[1]-200,40), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
+        img=cv2.putText(img, str(dRoll), (img.shape[1]-200,65), cv2.FONT_HERSHEY_PLAIN ,1, (20,255,255), 1, cv2.LINE_AA)
 
 
         alpha=0.2
@@ -1013,27 +1030,32 @@ class LaneDataset(Dataset):
 
             self.logger.trace (bcolors.WARNING + "color: " + bcolors.ENDC+ str(color))
 
-            lane_01_idx=np.where(tracking_LUT[:,tag_col]==lane[0])[0][0].astype("int")
-            lane_02_idx=np.where(tracking_LUT[:,tag_col]==lane[1])[0][0].astype("int")
+            poly_01_idx=np.where(tracking_LUT[:,tag_col]==lane[0])[0][0].astype("int")
+            poly_02_idx=np.where(tracking_LUT[:,tag_col]==lane[1])[0][0].astype("int")
 
-            self.logger.trace (bcolors.OKGREEN + "lane_01_idx: " + bcolors.ENDC+ str(lane_01_idx))
-            self.logger.trace (bcolors.OKGREEN + "lane_02_idx: " + bcolors.ENDC+ str(lane_02_idx))
+            poly_01_range=pyinterval[predictions_3d[poly_01_idx][0,0],predictions_3d[poly_01_idx][-1,0]]
+            poly_02_range=pyinterval[predictions_3d[poly_02_idx][0,0],predictions_3d[poly_02_idx][-1,0]]
+            overlap=poly_01_range&poly_02_range
 
-            lane_poly=np.append(predictions_img[lane_01_idx],predictions_img[lane_02_idx][::-1,:],axis=0)
+            self.logger.debug(bcolors.OKGREEN+"poly_01_range:"+bcolors.ENDC+str(poly_01_range))
+            self.logger.debug(bcolors.OKGREEN+"poly_02_range:"+bcolors.ENDC+str(poly_02_range))
+
+            # si hay overlap, hay possible matching to lanes
+            assert(len(overlap)>0) # si hay len tiene que haber overlap, no hay más
+            overlap=overlap[0]
+
+            poly_01=predictions_img[poly_01_idx][ (predictions_3d[poly_01_idx][:, 0] >= overlap[0])& (predictions_3d[poly_01_idx][:, 0] <= overlap[1])]
+            poly_02=predictions_img[poly_02_idx][ (predictions_3d[poly_02_idx][:, 0] >= overlap[0])& (predictions_3d[poly_02_idx][:, 0] <= overlap[1])]
+
+
+            # lane_poly=np.append(predictions_img[lane_01_idx],predictions_img[lane_02_idx][::-1,:],axis=0)
+            lane_poly=np.append(poly_01,poly_02[::-1],axis=0)
             overlay = cv2.fillPoly(overlay, pts=np.int32([lane_poly]), color=color)
 
         img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0) # Following line overlays transparent rectangle over the image
 
         self.logger.trace (bcolors.OKGREEN + "writting image in: " + bcolors.ENDC+ path_img)
         cv2.imwrite(path_img,img)
-
-
-
-
-
-
-
-
 
 
 
@@ -1189,7 +1211,31 @@ class LaneDataset(Dataset):
                 f.write(line)
 
 
-    def save_global_info(self,idx,predictions_3d,trackedPolys,lanes):
+
+    def save_csv(self,idx,point_cloud,pcb_fields):
+        img_path = self.dataset[idx]['path']
+        self.logger.trace (bcolors.OKGREEN + "img_path: " + bcolors.ENDC+ str(img_path))
+        filename=(img_path.split('/')[-1]).split(".png")[0]
+        self.logger.trace (bcolors.OKGREEN + "filename: " + bcolors.ENDC+ str(filename))
+
+        # output_dir="/home/javpasto/Documents/LaneDetection/LaneATT/experiments/laneattd_r18_tusimple/results"
+        output_dir=self.dataset.saving_dir
+        output_dir=os.path.join(output_dir,"csv")
+        os.makedirs(output_dir, exist_ok=True)
+
+        path_csv=os.path.join(output_dir,filename+".csv")
+        self.logger.trace (bcolors.OKGREEN + "writting csv in: " + bcolors.ENDC+ path_csv)
+
+        df = pd.DataFrame(point_cloud, columns=pcb_fields)
+        df.to_csv(path_csv)
+
+
+
+    def save_global_info(self,idx,predictions_3d,tracking_LUT,lanes):
+
+        """tracking_LUT -> # tag, idx_i, track_id, score,pred_counter,track_counter"""
+
+
         img_path = self.dataset[idx]['path']
         self.logger.trace (bcolors.OKGREEN + "img_path: " + bcolors.ENDC+ str(img_path))
         filename=(img_path.split('/')[-1]).split(".png")[0]
@@ -1210,20 +1256,25 @@ class LaneDataset(Dataset):
                 line+=str(lanes[idx_i,0])+" " +str(lanes[idx_i,1])+", "
             f.write(line+"\n")
 
+            """tracking_LUT -> # tag, idx_i, track_id, score,pred_counter,track_counter"""
+
+
             for idx_i in range(len(predictions_3d)):
-                prediction_3d=predictions_3d[idx_i]
-                id=trackedPolys[idx_i,1]
-                line=str(id)+"| "
-                f.write(line)
+                if tracking_LUT[idx_i,2]==-1: # nor propagated from previous, non from tracking, directly from predictions
+                    prediction_3d=predictions_3d[idx_i]
 
-                line=""
-                for x_,y_,z_,type_ in prediction_3d:
-                    line=line+str(x_)+" "+str(y_)+" "+str(z_)+" "+str(type_)+", "
-                line+="\n"
-                f.write(line)
+                    line=""
+                    # Write rows of tracking_LUT
+                    for col_idx in range(tracking_LUT.shape[1]):
+                        line=line+str(tracking_LUT[idx_i,col_idx])+", "
+                    line+="| "
+                    f.write(line)
 
-
-
+                    line=""
+                    for x_,y_,z_,type_ in prediction_3d:
+                        line=line+str(x_)+" "+str(y_)+" "+str(z_)+" "+str(type_)+", "
+                    line+="\n"
+                    f.write(line)
 
 
     def draw_annotation(self, idx, label=None, pred=None, img=None,save_predictions=True,bins=False):

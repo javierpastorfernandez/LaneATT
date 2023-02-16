@@ -8,6 +8,7 @@ from scipy.interpolate import interp1d
 import random
 from interval import interval as pyinterval
 import os,sys,glob
+import cv2
 
 
 
@@ -64,23 +65,103 @@ def associate_elements(ref_array, query_array, thr_dist,tag_col=0,score_col=2):
     noInfo_idxs=np.where(np.isnan(query_array[:,tag_col]))[0] # search in query_array where there is no tag info
     for idx_i in noInfo_idxs:
         for idx_j in range(ref_array.shape[0]-1):
-
-            if ((idx_j==0) and  (query_array[idx_i,score_col]<ref_array[0,score_col])): # tag smaller than first tag of old_trackedLaness
-                mask = ~np.isnan(query_array[:,tag_col]) # query_array mask where there is info
-                values  = query_array[mask,tag_col] # valores tag de query_array
-                values=np.append(values,ref_array[:,tag_col]) # valores tag de ref_array
-                query_array[idx_i,tag_col]=np.min(values)-1
-
-            elif ( (query_array[idx_i,score_col]>ref_array[idx_j,score_col]) and  (query_array[idx_i,score_col]<=ref_array[idx_j+1,score_col]) ):
+            # if the value not matched is BETWEEN values present in the ref_array
+            if  ( (query_array[idx_i,score_col]>ref_array[idx_j,score_col]) and  (query_array[idx_i,score_col]<=ref_array[idx_j+1,score_col]) ):
                 query_array[idx_i,tag_col]=0.5*(ref_array[idx_j,tag_col]+ref_array[idx_j+1,tag_col])
 
-        if (query_array[idx_i,score_col]>ref_array[-1,score_col]):
+        # if the value not matched is SMALLER values present in the ref_array
+        if (query_array[idx_i,score_col]<ref_array[0,score_col]): # tag smaller than first tag of old_trackedLaness
+            mask = ~np.isnan(query_array[:,tag_col]) # query_array mask where there is info
+            values  = query_array[mask,tag_col] # valores tag de query_array
+            values=np.append(values,ref_array[:,tag_col]) # valores tag de ref_array
+            query_array[idx_i,tag_col]=np.min(values)-1
+
+        # if the value not matched is SMALLER values present in the ref_array
+        elif (query_array[idx_i,score_col]>ref_array[-1,score_col]):
             mask = ~np.isnan(query_array[:,tag_col]) # tag values of query_array
             values  = query_array[mask,tag_col]
             values=np.append(values,ref_array[:,tag_col]) # tag values of OldTrackedLanes
             query_array[idx_i,tag_col]=np.max(values)+1
-
     return query_array
+
+
+def ImageBalance(img,sem_img,plot=True):
+    log = logging.getLogger('logger')
+    if plot:
+        cv2.imshow("sem_img", sem_img)# Show image
+    unique_colors = np.unique(sem_img.reshape(-1, 3), axis=0)
+    log.trace(bcolors.OKGREEN+"unique_colors: "+bcolors.ENDC+str(unique_colors))
+
+
+    sem_img = cv2.resize(sem_img, (img.shape[1],img.shape[0]), interpolation = cv2.INTER_NEAREST)
+
+    """
+    img=(np.array(img,copy=True)*255).astype("uint8") # Torch to numpy array
+    img=np.swapaxes(img, 0, 1)
+    img=np.swapaxes(img, 1,2)
+    """
+
+    height,width,_=img.shape
+    alpha=0.8
+
+    sky_color=[255, 206, 135]
+    vegetation_color= [194, 253, 147]
+
+    dashed_color = [255, 0, 128]
+    solid_color = [37,  193,  255]
+    pavement_color =  [255,   0, 255]
+
+
+
+    mask_option=2
+    if mask_option==0:
+        # create a black image
+        color_mask_3d = np.zeros(img.shape, dtype=np.uint8)
+
+        # define the four corners of the trapezoid
+        pt1 = (50, height)
+        pt2 = (width-50, height)
+        pt3 = (width-300, height-200)
+        pt4 = (300, height-200)
+
+        # create a polygon using the four points
+        pts = np.array([pt1, pt2, pt3, pt4], dtype=np.int32)
+
+        # fill the polygon with ones (white)
+        cv2.fillPoly(color_mask_3d, [pts], color=(255,255,255))
+
+    elif mask_option==1:
+        color_mask = np.all(sem_img == sky_color, axis=2)| np.all(sem_img == vegetation_color, axis=2)
+        color_mask_3d = np.ones_like(sem_img)*255
+        color_mask_3d[color_mask,:] = [0,0,0]
+
+    elif mask_option==2:
+        color_mask = np.all(sem_img == dashed_color, axis=2)| np.all(sem_img == solid_color, axis=2)| np.all(sem_img == pavement_color, axis=2)
+        color_mask_3d = np.zeros_like(sem_img)
+        color_mask_3d[color_mask,:] = [255,255,255]
+
+
+    # color_indexes = np.transpose(np.nonzero(color_mask))
+
+
+    """
+    img= alpha*img1 +(1-alpha)img2
+    img = cv2.addWeighted(img1,0.3,img2_resized,0.7,0)
+    """
+
+    img = cv2.addWeighted(img,alpha,color_mask_3d,alpha, 0) # Following line overlays transparent rectangle over the image
+
+
+    if plot:
+        cv2.namedWindow("img", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+        cv2.namedWindow("color_mask_3d", cv2.WINDOW_NORMAL)    # Create window with freedom of dimensions
+
+        cv2.imshow("img", img)# Show image
+        cv2.imshow("color_mask_3d", color_mask_3d)# Show image
+
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
 
 
 
@@ -164,17 +245,21 @@ def associate_polylines_with_tracking(polylines,tracking_LUT, thr_dist=[3.5,5.0]
 
 
                 diff=np.absolute(poly_01[:, query]-poly_02[:, query])
-                log.debug(bcolors.OKGREEN+"diff:\n"+bcolors.ENDC+str(diff))
+                log.trace(bcolors.OKGREEN+"diff:\n"+bcolors.ENDC+str(diff))
 
                 diff=np.mean(diff)
-                log.debug(bcolors.OKGREEN+"diff:"+bcolors.ENDC+str(diff))
+                log.trace(bcolors.OKGREEN+"diff:"+bcolors.ENDC+str(diff))
+                # breakpoint()
 
                 if((diff>=thr_dist[0]) and  (diff<=thr_dist[1])) :
                     # lanes.append(idx_i,(idx_i+1))
                     lanes.append([tag_01,tag_02])
 
         else:
-            breakpoint()
+            """HARDCODED"""
+            # breakpoint()
+
+
     return np.array(lanes)
 
 
@@ -282,7 +367,8 @@ def predict_equation_V3(old_coeffs,lidar_prev2lidar_tf, xs_prev,filter_negative=
         sort_idxs=np.argsort((info_current[:,0]))
 
         if not ((sort_idxs==np.arange(info_current.shape[0])).all()):
-            breakpoint()
+            """HARDCODED"""
+            # breakpoint()
 
         # if filter_negative:
         #     info_current=info_current[info_current[:,0]>=0]

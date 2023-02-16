@@ -34,8 +34,7 @@ class Bosch(LaneDatasetLoader):
         self.sem_w, self.sem_h =sem_size[1],sem_size[0]
 
         self.img_ext = img_ext
-        self.annotations = []
-        self.load_annotations()
+
 
         # Force max_lanes, used when evaluating testing with models trained on other datasets
         # On NoLabelDataset, always force it
@@ -203,6 +202,9 @@ class Bosch(LaneDatasetLoader):
         self.H_im2ipm = np.linalg.inv(np.matmul(self.H_g2im, self.H_ipm2g))
 
 
+        # LOAD ANNOTATIONS
+        self.annotations = []
+        self.load_annotations()
 
 
     def get_img_heigth(self, _):
@@ -219,8 +221,52 @@ class Bosch(LaneDatasetLoader):
         pattern = '{}/**/*{}'.format(self.root, self.img_ext)
         print('Looking for image files with the pattern', pattern)
 
+
+        # 1. RETRIEVE GPS FILENAMES AND SORT THEM
         files = glob.glob(pattern, recursive=True)
         files.sort()
+
+
+        # 2. USE FIRST FILE TO SET UTM_E0 AND UTM_NO
+        # First file in the sync
+
+        gps_num=self.sync.iloc[0]["gps"]
+        gps_path=os.path.join(self.gps_dir,str(gps_num)+".txt")
+        self.logger.trace(bcolors.OKGREEN+' First gps filename: ' +bcolors.ENDC+str(gps_num))
+        self.logger.trace(bcolors.OKGREEN+' First gps gps_path: ' +bcolors.ENDC+str(gps_path))
+
+        # LOAD GPS INFO
+        with open(gps_path, "r") as f_gps:
+            gpslines = f_gps.readlines()
+            assert(len(gpslines)==1) # GPS FILE SHOULD CONTAIN ONLY ONE LINE
+            gpslines=gpslines[0].split()
+
+            UTM_E=float(gpslines[0])
+            UTM_N=float(gpslines[1])
+
+            self.UTM_E0=UTM_E
+            self.UTM_N0=UTM_N
+
+
+
+        """"
+        #3. FILE TO WHICH START ->  HARDCODED
+
+        file=1653480010001
+        file=1653480029200
+        # file=1653480040601
+
+        files_filtered=sorted(os.listdir(self.root))
+        files_filtered=np.array([int(file.split(".")[0]) for file in files_filtered])
+        idx=np.where(files_filtered==file)[0]
+        idx=idx-7
+        # print("files_filtered: ",files_filtered)
+        files=files[int(idx):]
+
+        """
+
+        # files=files[6730:]
+        files=files[3700:]
 
 
         for file in files:
@@ -237,36 +283,34 @@ class Bosch(LaneDatasetLoader):
         print(self.sync.head())
 
 
-    def UseSyncFile(self,from_file,to_file,file):
+    def UseSyncFile(self,from_file,to_file,file,option="hard"):
         row=self.sync.loc[self.sync[from_file] ==float(file)]
 
-        """Some frames contain incomplete information such as point clouds. We would like to search """
-        if len(row)==0:
-            row_idx=np.argmin(self.sync[from_file]-float(file))
 
-            if row_idx>=2:
-                row=self.sync.iloc[(row_idx-2):(row_idx+2),:]  # Print information around found index
+        if option=="soft":
+            """Some frames contain incomplete information such as point clouds. We would like to search """
+            if len(row)==0:
+                row_idx=np.argmin(self.sync[from_file]-float(file))
+
+                if row_idx>=2:
+                    row=self.sync.iloc[(row_idx-2):(row_idx+2),:]  # Print information around found index
+                else:
+                    row=self.sync.iloc[0:(row_idx+2),:]  # Print information around found index
+
+                self.logger.trace (bcolors.OKGREEN + "row:\n" + bcolors.ENDC+ str(row.head()))
+                output_file='{:010d}'.format(self.sync.iloc[row_idx][to_file])
+                self.logger.trace (bcolors.OKGREEN + "Input file:" + bcolors.ENDC+ str(file)+
+                bcolors.OKGREEN + " output_file:" + bcolors.ENDC+ str(output_file))
+
+                return output_file
+
+        else:
+            if len(row)==0: # empty frame for some reason; stop
+                output_file=None
             else:
-                row=self.sync.iloc[0:(row_idx+2),:]  # Print information around found index
+                output_file='{num:010d}'.format(num=row[to_file].values[0])
 
-            self.logger.trace (bcolors.OKGREEN + "row:\n" + bcolors.ENDC+ str(row.head()))
 
-            output_file='{:010d}'.format(self.sync.iloc[row_idx][to_file])
-
-            self.logger.trace (bcolors.OKGREEN + "Input file:" + bcolors.ENDC+ str(file)+
-            bcolors.OKGREEN + " output_file:" + bcolors.ENDC+ str(output_file))
-
-            return output_file
-
-        # print("\n Row type ",type(row))
-        # print("\ndf row: ",row)
-        # print("\nDesired text file: ",row[to_file])
-
-        # print(type(row[to_file]))
-        # print(type(row[to_file].values))
-        # print((row[to_file].values))
-
-        output_file='{num:010d}'.format(num=row[to_file].values[0])
         return output_file
 
     def save_predictions(self,predictions,output_basedir):

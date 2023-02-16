@@ -2,8 +2,6 @@ import numpy as np
 import cv2
 
 
-
-
 def rescale_projection(org_size,tf_size,matrix):
     scale_factor_projection=np.array([
     [(tf_size[0]/org_size[0]),0, 0],
@@ -12,9 +10,6 @@ def rescale_projection(org_size,tf_size,matrix):
 
     matrix = np.matmul(scale_factor_projection,matrix)
     return matrix
-
-
-
 
 
 def DrawPoints(img,points,alpha=False,option="numpy",color=(20, 20, 20), thickness = 5,radius = 5):
@@ -26,6 +21,8 @@ def DrawPoints(img,points,alpha=False,option="numpy",color=(20, 20, 20), thickne
             overlay = cv2.circle(overlay, (x,y), radius, color, thickness)
 
     elif option=="numpy":
+        points=points[(points[:,1]<=(overlay.shape[0]-1))&(points[:,1]>=0)]
+        points=points[(points[:,0]<=(overlay.shape[1]-1))&(points[:,0]>=0)]
         overlay[points[:,1],points[:,0]]=color
 
     if alpha:
